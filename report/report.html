@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Terminated User Access Audit Report &amp; Screenshots</title>
+  <link rel="stylesheet" href="report.css" />
+</head>
+<body>
+  <header class="report-header">
+    <div class="header-left">
+      <img src="../icons/icon-48.png" alt="Logo" class="logo" />
+      <div>
+        <h1>Terminated User Access Audit Report</h1>
+        <p id="reportSubtitle" class="subtitle">All gathered website details, group checks (reporting &amp; tableau), and screenshots</p>
+      </div>
+    </div>
+    <div class="header-buttons">
+      <button id="downloadAllPngBtn" class="btn btn-primary">⬇️ Download All Screenshots (PNG)</button>
+      <button id="exportHtmlReportBtn" class="btn btn-secondary">📄 Export Standalone HTML Report</button>
+      <button id="copySummaryBtn" class="btn btn-secondary">📋 Copy Ticket Summary</button>
+      <button id="printPdfBtn" class="btn btn-secondary">🖨️ Print / Save PDF</button>
+      <button id="clearAllBtn" class="btn btn-danger">🗑️ Clear</button>
+    </div>
+  </header>
+
+  <main class="report-main">
+    <!-- Summary Details Table -->
+    <section class="section-card">
+      <h2>1. Gathered Details Across Websites</h2>
+      <div class="table-wrap">
+        <table id="summaryTable">
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>Website</th>
+              <th>Step / Query</th>
+              <th>User Email Checked</th>
+              <th>Access Verdict</th>
+              <th>"reporting" / "tableau" Matches</th>
+              <th>Gathered Page Details &amp; Rows</th>
+            </tr>
+          </thead>
+          <tbody id="summaryTableBody">
+            <tr>
+              <td colspan="7" class="empty-cell">No audit results yet. Run the 6-website check from the extension popup.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- Screenshots Gallery -->
+    <section class="section-card">
+      <h2>2. Captured Screenshot Evidence</h2>
+      <div id="screenshotsGrid" class="screenshots-grid"></div>
+    </section>
+  </main>
+
+  <script src="report.js"></script>
+</body>
+</html>
