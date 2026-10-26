@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Terminated User Access Auditor</title>
+  <link rel="stylesheet" href="popup.css" />
+</head>
+<body>
+  <header class="app-header">
+    <div class="brand">
+      <img src="../icons/icon-48.png" alt="Logo" class="brand-icon" />
+      <div>
+        <h1>Terminated User Access Auditor</h1>
+        <p class="subtitle">6-Website Access, Groups &amp; Screenshot Collector</p>
+      </div>
+    </div>
+    <div class="header-actions">
+      <button id="openSidePanelBtn" class="btn-ghost" title="Dock in Browser Side Panel so it stays open across tabs">📌 Side Panel</button>
+      <button id="openReportBtn" class="btn-ghost" title="Open Full Report & Screenshots">📊 Report (<span id="shotCountBadge">0</span>)</button>
+    </div>
+  </header>
+
+  <main class="container">
+    <!-- Live Status Banner -->
+    <div id="statusBanner" class="status-banner">
+      <span id="statusDot" class="status-dot"></span>
+      <span id="statusText">Ready — Enter terminated user email and 6 website links below.</span>
+    </div>
+
+    <!-- Section 1: Terminated User Email & Keywords -->
+    <section class="card">
+      <div class="card-title">1. Terminated User &amp; Ctrl+F Keywords</div>
+      <div class="field-group">
+        <label for="userEmailInput">Terminated User Email / Username (to paste &amp; verify):</label>
+        <input type="email" id="userEmailInput" placeholder="e.g. terminated.user@company.com" autocomplete="off" />
+      </div>
+
+      <div class="grid-3">
+        <div class="field-group">
+          <label for="keyword1Input">1st Ctrl+F Group Keyword:</label>
+          <input type="text" id="keyword1Input" value="reporting" />
+        </div>
+        <div class="field-group">
+          <label for="keyword2Input">2nd Ctrl+F Group Keyword:</label>
+          <input type="text" id="keyword2Input" value="tableau" />
+        </div>
+        <div class="field-group">
+          <label for="waitSecInput">Tab Load Wait (sec):</label>
+          <input type="number" id="waitSecInput" min="2" max="30" value="5" />
+        </div>
+      </div>
+
+      <label class="checkbox-row">
+        <input type="checkbox" id="autoDownloadCheck" />
+        <span>Automatically download PNG screenshots to <code>Downloads/Terminated_Access_Audit/</code></span>
+      </label>
+    </section>
+
+    <!-- Section 2: 6 Website Links -->
+    <section class="card">
+      <div class="card-header-flex">
+        <span class="card-title" style="margin-bottom:0;">2. Provide Links for the 6 Websites</span>
+        <button id="saveLinksBtn" class="btn-small">💾 Save Links</button>
+      </div>
+      <p class="helper-note">
+        Sites 1 &amp; 2 search user → open <strong>Groups</strong> tab → Ctrl+F <code>reporting</code> &amp; <code>tableau</code> + screenshot. Sites 3–5 paste email into User/Email box + screenshot. Site 6 runs Ctrl+F in Google Sheet + screenshot.
+      </p>
+
+      <div id="sitesListContainer" class="sites-list"></div>
+    </section>
+
+    <!-- Section 3: Run Controls -->
+    <section class="actions-bar">
+      <button id="runAllBtn" class="btn-primary">🚀 Run All 6 Websites &amp; Take Screenshots</button>
+      <button id="stopBtn" class="btn-danger hidden">⏹ Stop</button>
+    </section>
+
+    <!-- Section 4: Quick Current-Tab Manual Tools -->
+    <section class="card">
+      <div class="card-title">3. Current Tab Instant Actions</div>
+      <div class="quick-btns">
+        <button id="curPasteEmailBtn" class="btn-secondary">Paste Email in Box</button>
+        <button id="curGroupsTabBtn" class="btn-secondary">Go to Groups Tab</button>
+        <button id="curCtrlFReportingBtn" class="btn-secondary">Ctrl+F "reporting" + 📸</button>
+        <button id="curCtrlFTableauBtn" class="btn-secondary">Ctrl+F "tableau" + 📸</button>
+        <button id="curCtrlFEmailBtn" class="btn-secondary">Ctrl+F Email + 📸</button>
+      </div>
+    </section>
+  </main>
+
+  <script src="popup.js"></script>
+</body>
+</html>
