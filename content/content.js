@@ -1,9 +1,13 @@
-// Terminated User Access Auditor - Content Script
+// Terminated User Access Auditor - Fast & Accurate Content Script
 (() => {
   if (window.__tuaContentLoaded) return;
   window.__tuaContentLoaded = true;
 
   let currentHighlightedElements = [];
+
+  function sleep(ms) {
+    return new Promise(r => setTimeout(r, ms));
+  }
 
   // Create or get the realistic Chrome/Edge Ctrl+F overlay bar
   function getOrCreateCtrlFOverlay() {
@@ -31,7 +35,6 @@
     return overlay;
   }
 
-  // Clear previous highlights in batches
   function clearCtrlFHighlights() {
     for (const el of currentHighlightedElements) {
       try {
@@ -41,67 +44,126 @@
     currentHighlightedElements = [];
   }
 
-  // Check if an element is visible and not part of our own UI
   function isElementVisible(el) {
     if (!el || !(el instanceof HTMLElement)) return false;
     if (el.closest('#tua-ctrlf-overlay') || el.closest('#tua-helper-bar')) return false;
+    if (el.disabled || el.readOnly) return false;
     const style = window.getComputedStyle(el);
     if (style.display === 'none' || style.visibility === 'hidden' || parseFloat(style.opacity) === 0) {
       return false;
     }
     const rect = el.getBoundingClientRect();
-    return rect.width > 0 && rect.height > 0;
+    return rect.width > 30 && rect.height > 12;
   }
 
-  // Set value on React / Angular / Vue / FluentUI controlled input
+  // Check if an input is inside a global top navigation bar or sidebar (which should NOT be used for user table search)
+  function isGlobalHeaderOrSidebarInput(el) {
+    const rect = el.getBoundingClientRect();
+    const ancestor = el.closest(
+      'header, nav, aside, [role="banner"], [role="navigation"], ' +
+      '[class*="navbar" i], [class*="topnav" i], [class*="global-search" i], [class*="globalsearch" i], ' +
+      '[class*="app-header" i], [class*="site-header" i], [class*="sidebar" i], [class*="left-nav" i], ' +
+      '#O365_Header, #O365_SearchBoxContainer, #O365_TopMenu'
+    );
+    if (ancestor) return true;
+
+    const attrs = (
+      (el.getAttribute('placeholder') || '') + ' ' +
+      (el.getAttribute('aria-label') || '') + ' ' +
+      (el.getAttribute('name') || '') + ' ' +
+      (el.getAttribute('id') || '') + ' ' +
+      (el.className || '')
+    ).toLowerCase();
+
+    // Reject inputs meant for searching documents, templates, help articles, or global navigation
+    const rejectWords = [
+      'search documents',
+      'search templates',
+      'search help',
+      'search all',
+      'global search',
+      'jump to',
+      'command',
+      'search integrations',
+      'search services',
+      'search incidents'
+    ];
+    if (rejectWords.some(w => attrs.includes(w))) return true;
+
+    // In PagerDuty, Lucidchart, and M365, the top 62px is the global suite/app bar
+    if (rect.top < 62 && !attrs.includes('user') && !attrs.includes('email') && !attrs.includes('person')) {
+      return true;
+    }
+
+    return false;
+  }
+
+  // Set value on React / Angular / Vue / Ember / FluentUI controlled input
   function setNativeInputValue(inputEl, value) {
     inputEl.focus();
+    inputEl.click();
+
     const proto = inputEl instanceof HTMLTextAreaElement
       ? window.HTMLTextAreaElement.prototype
       : window.HTMLInputElement.prototype;
     const nativeSetter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
+
     if (nativeSetter) {
+      nativeSetter.call(inputEl, '');
+      inputEl.dispatchEvent(new Event('input', { bubbles: true }));
       nativeSetter.call(inputEl, value);
     } else {
       inputEl.value = value;
     }
-    inputEl.dispatchEvent(new Event('input', { bubbles: true }));
+
+    inputEl.dispatchEvent(new InputEvent('beforeinput', { bubbles: true, cancelable: true, inputType: 'insertText', data: value }));
+    inputEl.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: value }));
     inputEl.dispatchEvent(new Event('change', { bubbles: true }));
+    inputEl.dispatchEvent(new KeyboardEvent('keyup', { key: value.slice(-1) || 'm', bubbles: true }));
   }
 
-  // Trigger Enter key and optional search button click
+  // Trigger Enter key and search button click
   function triggerSearchSubmit(inputEl) {
-    const enterEvents = ['keydown', 'keypress', 'keyup'];
-    for (const evtType of enterEvents) {
-      inputEl.dispatchEvent(new KeyboardEvent(evtType, {
-        key: 'Enter',
-        code: 'Enter',
-        keyCode: 13,
-        which: 13,
-        bubbles: true,
-        cancelable: true
-      }));
-    }
+    const enterOpts = {
+      key: 'Enter',
+      code: 'Enter',
+      keyCode: 13,
+      which: 13,
+      bubbles: true,
+      cancelable: true
+    };
+    inputEl.dispatchEvent(new KeyboardEvent('keydown', enterOpts));
+    inputEl.dispatchEvent(new KeyboardEvent('keypress', enterOpts));
+    inputEl.dispatchEvent(new KeyboardEvent('keyup', enterOpts));
 
-    // Check if inside a form or next to a search button
+    // Check if inside a form with a submit/search button
     const form = inputEl.closest('form');
     if (form) {
-      const submitBtn = form.querySelector('button[type="submit"], input[type="submit"], button[aria-label*="search" i], button[title*="search" i]');
+      const submitBtn = form.querySelector(
+        'button[type="submit"], input[type="submit"], button[aria-label*="search" i], button[title*="search" i], .search-button, [class*="search-btn" i]'
+      );
       if (submitBtn && isElementVisible(submitBtn)) {
         submitBtn.click();
         return;
       }
     }
 
-    // Check nearby sibling/parent search button
+    // Check immediate sibling/parent container for a Search / Filter icon button (e.g., PagerDuty & Bigstock)
     const container = inputEl.parentElement?.parentElement || inputEl.parentElement;
     if (container) {
-      const buttons = Array.from(container.querySelectorAll('button, [role="button"], input[type="button"], input[type="submit"]'));
+      const buttons = Array.from(container.querySelectorAll('button, [role="button"], input[type="button"], input[type="submit"], a.btn'));
       for (const btn of buttons) {
         if (!isElementVisible(btn)) continue;
-        const label = ((btn.innerText || '') + ' ' + (btn.getAttribute('aria-label') || '') + ' ' + (btn.getAttribute('title') || '')).toLowerCase();
-        if ((label.includes('search') || label.includes('find') || label.includes('filter') || label.includes('go') || label.includes('lookup')) &&
-            !label.includes('clear') && !label.includes('cancel') && !label.includes('close') && !label.includes('reset')) {
+        const label = (
+          (btn.innerText || '') + ' ' +
+          (btn.getAttribute('aria-label') || '') + ' ' +
+          (btn.getAttribute('title') || '') + ' ' +
+          (btn.className || '')
+        ).toLowerCase();
+        if (
+          (label.includes('search') || label.includes('find') || label.includes('filter') || label.includes('go') || label.includes('lookup') || label.includes('submit')) &&
+          !label.includes('clear') && !label.includes('cancel') && !label.includes('close') && !label.includes('reset') && !label.includes('add') && !label.includes('invite')
+        ) {
           btn.click();
           break;
         }
@@ -109,17 +171,63 @@
     }
   }
 
-  // Score candidate input elements to find the best Email / User search box
+  // Site-aware + Universal User/Email search input finder
   function findBestUserOrEmailInput() {
-    const candidates = Array.from(document.querySelectorAll(
-      'input:not([type="hidden"]):not([type="checkbox"]):not([type="radio"]):not([type="file"]):not([type="password"]), [ role="searchbox" ], [ contenteditable="true" ]'
+    const host = location.hostname.toLowerCase();
+    const allInputs = Array.from(document.querySelectorAll(
+      'input:not([type="hidden"]):not([type="checkbox"]):not([type="radio"]):not([type="file"]):not([type="password"]):not([type="submit"]):not([type="button"]), [role="searchbox"]'
     )).filter(el => isElementVisible(el) && el.id !== 'tua-ctrlf-input');
 
-    let bestEl = null;
-    let bestScore = -1;
+    if (allInputs.length === 0) return null;
 
-    for (const el of candidates) {
+    // 1. PagerDuty-specific priority: Users page search bar inside main page body (never top navbar)
+    if (host.includes('pagerduty.com')) {
+      const pdCandidates = allInputs.filter(el => !isGlobalHeaderOrSidebarInput(el));
+      for (const el of pdCandidates) {
+        const attr = ((el.getAttribute('placeholder') || '') + ' ' + (el.getAttribute('aria-label') || '') + ' ' + (el.getAttribute('name') || '') + ' ' + (el.id || '')).toLowerCase();
+        if (attr.includes('user') || attr.includes('email') || attr.includes('name') || attr.includes('filter') || attr.includes('search') || attr.includes('query')) {
+          return el;
+        }
+      }
+      if (pdCandidates.length > 0) return pdCandidates[0];
+    }
+
+    // 2. Lucidchart-specific priority: Users list search box inside main admin workspace (never sidebar/document search)
+    if (host.includes('lucid.app') || host.includes('lucidchart.com')) {
+      const lucidCandidates = allInputs.filter(el => {
+        if (isGlobalHeaderOrSidebarInput(el)) return false;
+        const rect = el.getBoundingClientRect();
+        // In Lucidchart Admin, the left navigation sidebar is ~200px wide and top bar is ~64px high
+        return rect.top >= 60 && rect.left >= 150;
+      });
+      for (const el of lucidCandidates) {
+        const attr = ((el.getAttribute('placeholder') || '') + ' ' + (el.getAttribute('aria-label') || '') + ' ' + (el.getAttribute('name') || '') + ' ' + (el.className || '')).toLowerCase();
+        if (attr.includes('user') || attr.includes('email') || attr.includes('name') || attr.includes('member') || attr.includes('search') || attr.includes('filter')) {
+          return el;
+        }
+      }
+      if (lucidCandidates.length > 0) return lucidCandidates[0];
+    }
+
+    // 3. M365 Admin Center priority: Active users search box (never top O365 suite bar)
+    if (host.includes('microsoft.com')) {
+      const m365Candidates = allInputs.filter(el => !isGlobalHeaderOrSidebarInput(el) && el.getBoundingClientRect().top >= 65);
+      for (const el of m365Candidates) {
+        const attr = ((el.getAttribute('placeholder') || '') + ' ' + (el.getAttribute('aria-label') || '') + ' ' + (el.getAttribute('data-automation-id') || '') + ' ' + (el.className || '')).toLowerCase();
+        if (attr.includes('active user') || attr.includes('user') || attr.includes('search') || attr.includes('ms-searchbox')) {
+          return el;
+        }
+      }
+      if (m365Candidates.length > 0) return m365Candidates[0];
+    }
+
+    // 4. General scoring across all websites (Shutterstock, Bigstock, PagerDuty, Lucidchart, M365, etc.)
+    let bestEl = null;
+    let bestScore = -9999;
+
+    for (const el of allInputs) {
       let score = 0;
+      const rect = el.getBoundingClientRect();
       const type = (el.getAttribute('type') || '').toLowerCase();
       const placeholder = (el.getAttribute('placeholder') || '').toLowerCase();
       const ariaLabel = (el.getAttribute('aria-label') || '').toLowerCase();
@@ -129,19 +237,28 @@
       const cls = (el.className || '').toString().toLowerCase();
       const combined = `${type} ${placeholder} ${ariaLabel} ${name} ${id} ${role} ${cls}`;
 
-      if (type === 'search' || role === 'searchbox') score += 35;
-      if (type === 'email') score += 45;
-      if (combined.includes('active user') || combined.includes('active users')) score += 60;
-      if (combined.includes('email')) score += 50;
-      if (combined.includes('user')) score += 45;
-      if (combined.includes('person') || combined.includes('member') || combined.includes('account') || combined.includes('employee')) score += 45;
-      if (combined.includes('search') || combined.includes('filter') || combined.includes('find') || combined.includes('lookup') || combined.includes('query')) score += 35;
-      if (combined.includes('ms-searchbox')) score += 50; // M365 Admin Center
+      // Heavily penalize global navbar / header / sidebar inputs
+      if (isGlobalHeaderOrSidebarInput(el)) {
+        score -= 250;
+      }
 
-      // Prefer inputs in the top half of the page
-      const rect = el.getBoundingClientRect();
-      if (rect.top >= 0 && rect.top < 500) score += 15;
-      if (rect.width >= 140) score += 10;
+      // Strongly reward being inside <main> or [role="main"] or a user/table section
+      if (el.closest('main, [role="main"], #main, #content, [class*="user" i], [class*="person" i], [class*="member" i], [class*="table" i], [class*="directory" i]')) {
+        score += 65;
+      }
+
+      if (combined.includes('active user') || combined.includes('active users') || combined.includes('search users') || combined.includes('filter users')) score += 90;
+      if (combined.includes('name or email') || combined.includes('user or email')) score += 85;
+      if (combined.includes('email')) score += 70;
+      if (combined.includes('user') || combined.includes('person') || combined.includes('member') || combined.includes('employee')) score += 65;
+      if (combined.includes('search') || combined.includes('filter') || combined.includes('find') || combined.includes('lookup') || combined.includes('query')) score += 40;
+      if (type === 'search' || role === 'searchbox') score += 30;
+      if (type === 'email') score += 45;
+
+      // Prefer inputs located in the main content band (top: 68px to 550px, left >= 100px)
+      if (rect.top >= 68 && rect.top <= 550) score += 35;
+      if (rect.left >= 140) score += 15;
+      if (rect.width >= 160) score += 10;
 
       if (score > bestScore) {
         bestScore = score;
@@ -152,27 +269,24 @@
     return bestEl;
   }
 
-  // Step helper: Locate Email / User box and paste email
+  // Poll quickly (every 120ms) for the search input so we act IMMEDIATELY as soon as the site renders
+  async function waitForUserSearchInput(maxWaitMs = 3500) {
+    const start = Date.now();
+    while (Date.now() - start < maxWaitMs) {
+      const inputEl = findBestUserOrEmailInput();
+      if (inputEl) return inputEl;
+      await sleep(120);
+    }
+    return findBestUserOrEmailInput();
+  }
+
+  // Locate Email / Active User box and paste email immediately
   async function locateAndPasteEmail(email) {
     if (!email) return { foundInput: false, message: 'No email provided' };
 
-    // On M365 Admin Center or SPAs, sometimes the search box is collapsed behind a search button
-    let inputEl = findBestUserOrEmailInput();
-    if (!inputEl) {
-      const searchTriggers = Array.from(document.querySelectorAll('button, [role="button"], a')).filter(el => {
-        if (!isElementVisible(el)) return false;
-        const txt = ((el.innerText || '') + ' ' + (el.getAttribute('aria-label') || '') + ' ' + (el.getAttribute('title') || '')).toLowerCase();
-        return txt.includes('search') || txt.includes('filter') || txt.includes('find user');
-      });
-      if (searchTriggers.length > 0) {
-        searchTriggers[0].click();
-        await new Promise(r => setTimeout(r, 600));
-        inputEl = findBestUserOrEmailInput();
-      }
-    }
+    let inputEl = await waitForUserSearchInput(3200);
 
     if (!inputEl) {
-      // Fallback: perform Ctrl+F with the email so the page is still searched
       const ctrlFRes = await performCtrlFSearch(email, true);
       return {
         foundInput: false,
@@ -188,7 +302,7 @@
     currentHighlightedElements.push(inputEl);
 
     setNativeInputValue(inputEl, email);
-    await new Promise(r => setTimeout(r, 250));
+    await sleep(120);
     triggerSearchSubmit(inputEl);
 
     return {
@@ -198,14 +312,13 @@
     };
   }
 
-  // Step helper for Sites 1 & 2: Click the searched user row (if needed) and navigate to the "Groups" tab
+  // Open User Profile & Click "Groups" Tab (for Shutterstock Inc Person)
   async function openUserAndNavigateToGroupsTab(email) {
     const emailLower = (email || '').toLowerCase().trim();
     const userPrefix = emailLower.split('@')[0] || emailLower;
     let clickedUser = false;
     let clickedGroupsTab = false;
 
-    // 1. Check if a Groups tab is ALREADY visible on the page; if not, try clicking the user result row first
     const findGroupsTabElement = () => {
       const tabCandidates = Array.from(document.querySelectorAll(
         '[role="tab"], button, a, [role="button"], [role="menuitem"], .ms-Pivot-link, nav a, ul li a, span'
@@ -237,7 +350,6 @@
     let groupsTabEl = findGroupsTabElement();
 
     if (!groupsTabEl && emailLower) {
-      // Try finding the person/user row/link in the search results table to open their profile
       const rowCandidates = Array.from(document.querySelectorAll(
         'tr a, [role="row"] a, [role="row"] [role="gridcell"], [role="listitem"] a, a[href*="person" i], a[href*="user" i], .ms-DetailsRow, td a, td span'
       )).filter(isElementVisible);
@@ -247,7 +359,7 @@
         if (txt.includes(emailLower) || (userPrefix.length >= 3 && txt.includes(userPrefix))) {
           el.click();
           clickedUser = true;
-          await new Promise(r => setTimeout(r, 1800));
+          await sleep(900);
           break;
         }
       }
@@ -258,7 +370,7 @@
       groupsTabEl.scrollIntoView({ behavior: 'instant', block: 'center' });
       groupsTabEl.click();
       clickedGroupsTab = true;
-      await new Promise(r => setTimeout(r, 1500));
+      await sleep(700);
     }
 
     return {
@@ -268,7 +380,7 @@
     };
   }
 
-  // Perform Ctrl+F search, highlight matching elements in batches (non-blocking), and show Ctrl+F bar
+  // Fast Ctrl+F search + highlight + overlay
   async function performCtrlFSearch(query, showOverlay = true) {
     const cleanQuery = (query || '').trim();
     const overlay = getOrCreateCtrlFOverlay();
@@ -282,7 +394,7 @@
       return { query: '', matchCount: 0, matchedSnippets: [] };
     }
 
-    // If on Google Sheets, also populate Google Sheets' own Find bar if present or openable
+    // If on Google Sheets, trigger Google Sheets' native Ctrl+F bar immediately
     if (location.hostname.includes('docs.google.com') && location.pathname.includes('/spreadsheets')) {
       try {
         let gsFindInput = document.querySelector('.docs-findinput-input');
@@ -294,7 +406,7 @@
             ctrlKey: true,
             bubbles: true
           }));
-          await new Promise(r => setTimeout(r, 350));
+          await sleep(180);
           gsFindInput = document.querySelector('.docs-findinput-input');
         }
         if (gsFindInput && isElementVisible(gsFindInput)) {
@@ -309,8 +421,7 @@
     const matchedElements = [];
     const matchedSnippets = [];
 
-    // Batch DOM inspection with requestAnimationFrame to avoid blocking main thread
-    const BATCH_SIZE = 250;
+    const BATCH_SIZE = 450;
     for (let i = 0; i < allElements.length; i += BATCH_SIZE) {
       await new Promise(resolve => requestAnimationFrame(() => {
         const slice = allElements.slice(i, i + BATCH_SIZE);
@@ -319,18 +430,13 @@
           const tag = el.tagName;
           if (tag === 'SCRIPT' || tag === 'STYLE' || tag === 'NOSCRIPT' || tag === 'SVG' || tag === 'PATH') continue;
 
-          // Check input values as well as leaf-ish text nodes
           if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
             if ((el.value || '').toLowerCase().includes(qLower)) {
               matchedElements.push(el);
-              if (matchedSnippets.length < 10) {
-                matchedSnippets.push(`Input value: ${el.value.trim().slice(0, 120)}`);
-              }
             }
             continue;
           }
 
-          // Check direct text content of leaf or near-leaf elements
           let hasDirectMatch = false;
           for (const child of el.childNodes) {
             if (child.nodeType === Node.TEXT_NODE && (child.nodeValue || '').toLowerCase().includes(qLower)) {
@@ -351,8 +457,7 @@
       }));
     }
 
-    // Highlight matched elements in batches
-    const HIGHLIGHT_BATCH = 25;
+    const HIGHLIGHT_BATCH = 40;
     for (let i = 0; i < matchedElements.length; i += HIGHLIGHT_BATCH) {
       await new Promise(resolve => requestAnimationFrame(() => {
         matchedElements.slice(i, i + HIGHLIGHT_BATCH).forEach(el => {
@@ -390,16 +495,14 @@
     };
   }
 
-  // Gather comprehensive site audit details from the current page DOM
   function gatherSiteDetails(email) {
     const bodyText = (document.body?.innerText || '');
     const bodyLower = bodyText.toLowerCase();
     const emailClean = (email || '').trim().toLowerCase();
     const emailPrefix = emailClean.split('@')[0] || '';
 
-    // Count occurrences of email (excluding our own helper UI)
     const cleanTextWithoutHelper = bodyText
-      .replace(/Terminated Access Auditor[\s\S]*$/i, '')
+      .replace(/Access Auditor[\s\S]*$/i, '')
       .toLowerCase();
 
     const emailFound = emailClean
@@ -409,7 +512,6 @@
     const reportingMatches = (cleanTextWithoutHelper.match(/reporting/gi) || []).length;
     const tableauMatches = (cleanTextWithoutHelper.match(/tableau/gi) || []).length;
 
-    // Detect status phrases on page
     const noResultPatterns = [
       'no results',
       'no users found',
@@ -436,8 +538,8 @@
       'deleted'
     ];
 
-    let hasNoResultsText = noResultPatterns.some(p => bodyLower.includes(p));
-    let matchedDisabledTerms = disabledPatterns.filter(p => bodyLower.includes(p));
+    const hasNoResultsText = noResultPatterns.some(p => bodyLower.includes(p));
+    const matchedDisabledTerms = disabledPatterns.filter(p => bodyLower.includes(p));
 
     let accessVerdict = 'No User Found / Access Revoked';
     if (hasNoResultsText) {
@@ -448,7 +550,6 @@
       accessVerdict = 'User Record Found on Page — Review Screenshot';
     }
 
-    // Extract meaningful table rows / list items mentioning the user, groups, reporting, tableau, or status
     const extractedRows = [];
     const rowEls = Array.from(document.querySelectorAll('tr, [role="row"], [role="listitem"], .ms-DetailsRow, li'));
     for (const r of rowEls) {
@@ -487,11 +588,9 @@
     };
   }
 
-  // Render in-page floating helper bar for one-click manual/semi-automated actions
   async function initFloatingHelperBar() {
     const { auditConfig, showHelperBar = true } = await chrome.storage.local.get(['auditConfig', 'showHelperBar']);
     if (!showHelperBar || !auditConfig?.userEmail) return;
-
     if (document.getElementById('tua-helper-bar')) return;
 
     const bar = document.createElement('div');
@@ -530,24 +629,20 @@
         setStatus(res.message);
       } else if (act === 'groups-tab') {
         const res = await openUserAndNavigateToGroupsTab(email);
-        setStatus(res.clickedGroupsTab ? `Opened ${res.groupsTabLabel}` : 'Groups tab not found on current view');
+        setStatus(res.clickedGroupsTab ? `Opened ${res.groupsTabLabel}` : 'Groups tab not found');
       } else if (act === 'ctrlf-reporting') {
         await performCtrlFSearch('reporting', true);
-        setStatus('Capturing "reporting"...');
         await requestBackgroundScreenshot('Ctrl+F reporting', email, 'reporting');
         setStatus('Saved "reporting" screenshot!');
       } else if (act === 'ctrlf-tableau') {
         await performCtrlFSearch('tableau', true);
-        setStatus('Capturing "tableau"...');
         await requestBackgroundScreenshot('Ctrl+F tableau', email, 'tableau');
         setStatus('Saved "tableau" screenshot!');
       } else if (act === 'ctrlf-email') {
         await performCtrlFSearch(email, true);
-        setStatus('Capturing Email Ctrl+F...');
         await requestBackgroundScreenshot(`Ctrl+F ${email}`, email, email);
         setStatus('Saved Email screenshot!');
       } else if (act === 'snap-only') {
-        setStatus('Capturing screenshot...');
         await requestBackgroundScreenshot('Manual Screenshot', email, '');
         setStatus('Screenshot saved!');
       }
@@ -568,7 +663,6 @@
     if (bar) bar.classList.remove('tua-screenshot-hide');
   }
 
-  // Listen for automation commands from Service Worker or Popup
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     (async () => {
       try {
@@ -578,7 +672,6 @@
         }
 
         if (message.type === 'LOCATE_AND_PASTE_EMAIL') {
-          await initFloatingHelperBar();
           const res = await locateAndPasteEmail(message.email);
           sendResponse({ ok: true, ...res });
           return;
@@ -591,7 +684,6 @@
         }
 
         if (message.type === 'RUN_CTRLF_SEARCH') {
-          await initFloatingHelperBar();
           const res = await performCtrlFSearch(message.query, message.showOverlay !== false);
           sendResponse({ ok: true, ...res });
           return;
@@ -629,6 +721,5 @@
     return true;
   });
 
-  // Initialize helper bar if an audit is configured
   initFloatingHelperBar().catch(() => {});
 })();
