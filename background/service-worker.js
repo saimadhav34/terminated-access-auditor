@@ -1,6 +1,6 @@
-// Terminated User Access Auditor - Fast MV3 Service Worker
+// Terminated User Access Auditor - Fast & Frame-Aware MV3 Service Worker
 
-const CONFIG_VERSION = 4;
+const CONFIG_VERSION = 5;
 
 const DEFAULT_SITES = [
   {
@@ -9,7 +9,7 @@ const DEFAULT_SITES = [
     name: 'Shutterstock Inc Person',
     url: '',
     mode: 'user_groups_ctrlf',
-    description: 'Search user → Open Groups tab → Ctrl+F "reporting" (Screenshot) & "tableau" (Screenshot)'
+    description: 'Upper search bar ("Search for people, apps...") → Select user → Groups tab → Ctrl+F "reporting" & "tableau"'
   },
   {
     id: 'site_2',
@@ -17,7 +17,7 @@ const DEFAULT_SITES = [
     name: 'PagerDuty',
     url: '',
     mode: 'email_search',
-    description: 'Locate Active User / Email field → Paste email & search → Gather details & Screenshot'
+    description: 'Locate "Find a user by email or name" → Paste email & search → Screenshot'
   },
   {
     id: 'site_3',
@@ -25,7 +25,7 @@ const DEFAULT_SITES = [
     name: 'M365 Admin Center',
     url: '',
     mode: 'email_search',
-    description: 'Locate Active Users search field → Paste email & search → Gather details & Screenshot'
+    description: 'Locate Active Users search field → Paste email & search → Screenshot'
   },
   {
     id: 'site_4',
@@ -33,7 +33,7 @@ const DEFAULT_SITES = [
     name: 'Lucidchart',
     url: '',
     mode: 'email_search',
-    description: 'Locate Active User / Email field → Paste email & search → Gather details & Screenshot'
+    description: 'Locate "Search current view" → Paste email & search → Screenshot'
   },
   {
     id: 'site_5',
@@ -41,7 +41,7 @@ const DEFAULT_SITES = [
     name: 'Bigstock Admin',
     url: '',
     mode: 'email_search',
-    description: 'Locate Active User / Email field → Paste email & search → Gather details & Screenshot'
+    description: 'Locate Active User / Email field → Paste email & search → Screenshot'
   },
   {
     id: 'site_6',
@@ -49,7 +49,7 @@ const DEFAULT_SITES = [
     name: 'Google Sheet',
     url: '',
     mode: 'ctrlf_sheet',
-    description: 'Press Ctrl+F & search for terminated user email → Gather details & Screenshot'
+    description: 'Press Ctrl+F & search for terminated user email → Screenshot'
   }
 ];
 
@@ -102,7 +102,6 @@ async function appendAuditResult(entry) {
   await chrome.storage.local.set({ auditResults });
 }
 
-// Fast poll (every 150ms) for tab load completion
 async function waitForTabComplete(tabId, timeoutMs = 12000) {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
@@ -114,12 +113,11 @@ async function waitForTabComplete(tabId, timeoutMs = 12000) {
     } catch (_) {
       break;
     }
-    await sleep(150);
+    await sleep(140);
   }
   return chrome.tabs.get(tabId).catch(() => null);
 }
 
-// Ensure content script and styles are injected in the target tab
 async function ensureContentScriptReady(tabId) {
   try {
     const ping = await chrome.tabs.sendMessage(tabId, { type: 'PING_CONTENT' });
@@ -145,10 +143,86 @@ async function ensureContentScriptReady(tabId) {
   }
 }
 
-// Capture screenshot of a specific tab quickly and cleanly
+// Execute across ALL frames (including cross-origin iframes in PagerDuty / Lucidchart) to find exact placeholders
+// like "Find a user by email or name", "Search current view", or "Search for people, apps..."
+async function pasteEmailInMatchingFrameInput(tabId, email, preferUpperPeopleSearch = false) {
+  // First try via main content script (which polls for up to 3.2s)
+  const mainRes = await chrome.tabs.sendMessage(tabId, {
+    type: 'LOCATE_AND_PASTE_EMAIL',
+    email,
+    preferUpperPeopleSearch
+  }).catch(() => null);
+
+  // Also execute across all frames in case PagerDuty or Lucidchart rendered the table search bar inside a sub-frame
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId, allFrames: true },
+      args: [email, preferUpperPeopleSearch],
+      func: (userEmail, isUpperPeople) => {
+        const inputs = Array.from(document.querySelectorAll(
+          'input:not([type="hidden"]):not([type="checkbox"]):not([type="radio"]):not([type="password"]), [role="searchbox"], [role="combobox"]'
+        )).filter(el => {
+          if (el.id === 'tua-ctrlf-input' || el.disabled || el.readOnly) return false;
+          const r = el.getBoundingClientRect();
+          return r.width > 24 && r.height > 10;
+        });
+
+        let target = null;
+        for (const el of inputs) {
+          const desc = (
+            (el.getAttribute('placeholder') || '') + ' ' +
+            (el.getAttribute('aria-label') || '') + ' ' +
+            (el.getAttribute('title') || '') + ' ' +
+            (el.getAttribute('name') || '')
+          ).toLowerCase();
+
+          if (
+            desc.includes('search current view') ||
+            desc.includes('find a user by email') ||
+            desc.includes('by email or name') ||
+            desc.includes('find a user') ||
+            desc.includes('search for people') ||
+            desc.includes('people, apps') ||
+            desc.includes('people,apps')
+          ) {
+            target = el;
+            break;
+          }
+        }
+
+        if (!target) return false;
+
+        target.focus();
+        target.click();
+        const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
+        if (setter) {
+          setter.call(target, '');
+          target.dispatchEvent(new Event('input', { bubbles: true }));
+          setter.call(target, userEmail);
+        } else {
+          target.value = userEmail;
+        }
+        target.dispatchEvent(new InputEvent('beforeinput', { bubbles: true, cancelable: true, inputType: 'insertText', data: userEmail }));
+        target.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: userEmail }));
+        target.dispatchEvent(new Event('change', { bubbles: true }));
+
+        if (!isUpperPeople) {
+          const enterOpts = { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true };
+          target.dispatchEvent(new KeyboardEvent('keydown', enterOpts));
+          target.dispatchEvent(new KeyboardEvent('keypress', enterOpts));
+          target.dispatchEvent(new KeyboardEvent('keyup', enterOpts));
+        }
+        return true;
+      }
+    });
+  } catch (_) {}
+
+  return mainRes;
+}
+
 async function captureTabEvidence({ tabId, siteName, siteIndex, stepLabel, activeQuery, email, hideCtrlFOverlay = false, autoDownload = false }) {
   const tab = await chrome.tabs.update(tabId, { active: true });
-  await sleep(160);
+  await sleep(150);
 
   let details = {
     url: tab?.url || '',
@@ -172,7 +246,7 @@ async function captureTabEvidence({ tabId, siteName, siteIndex, stepLabel, activ
     }
   } catch (_) {}
 
-  await sleep(90);
+  await sleep(80);
   const screenshotDataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, { format: 'png' });
 
   try {
@@ -208,12 +282,11 @@ async function captureTabEvidence({ tabId, siteName, siteIndex, stepLabel, activ
   return entry;
 }
 
-// Execute fast automation on a pre-opened tab
 async function runSingleSiteOnTab(site, tabId, config, progressIndex, totalSites) {
   const email = (config.userEmail || '').trim();
   const kw1 = (config.keyword1 || 'reporting').trim();
   const kw2 = (config.keyword2 || 'tableau').trim();
-  const settleMs = Math.max(300, (Number(config.pageLoadWaitSec) || 1) * 600);
+  const settleMs = Math.max(250, (Number(config.pageLoadWaitSec) || 1) * 500);
   const autoDownload = Boolean(config.autoDownloadScreenshots);
 
   await chrome.tabs.update(tabId, { active: true });
@@ -222,23 +295,34 @@ async function runSingleSiteOnTab(site, tabId, config, progressIndex, totalSites
   await sleep(settleMs);
 
   if (site.mode === 'user_groups_ctrlf') {
-    // Shutterstock Inc Person:
-    // 1. Immediately locate user/person box & paste email
+    // 1. Shutterstock Inc Person:
+    // Type email in upper search bar ("Search for people, apps and user")
     await updateRunState({
       running: true,
       progress: progressIndex,
       total: totalSites,
-      statusText: `[${progressIndex}/${totalSites}] ${site.name}: Searching "${email}"...`
+      statusText: `[${progressIndex}/${totalSites}] ${site.name}: Searching upper bar ("Search for people, apps...") for "${email}"...`
     });
     if (email) {
+      await pasteEmailInMatchingFrameInput(tabId, email, true);
+      await sleep(500);
+
+      // 2. Select user from dropdown / search results
+      await updateRunState({
+        statusText: `[${progressIndex}/${totalSites}] ${site.name}: Selecting user "${email}"...`
+      });
       await chrome.tabs.sendMessage(tabId, {
-        type: 'LOCATE_AND_PASTE_EMAIL',
+        type: 'SELECT_USER_FROM_DROPDOWN',
         email
       }).catch(() => {});
-      await sleep(1100);
+
+      // Wait briefly in case selecting the user navigated to the user's profile URL
+      await sleep(750);
+      await waitForTabComplete(tabId, 10000);
+      await ensureContentScriptReady(tabId);
     }
 
-    // 2. Open user & click Groups tab
+    // 3. Click Groups tab on user profile
     await updateRunState({
       statusText: `[${progressIndex}/${totalSites}] ${site.name}: Opening Groups tab...`
     });
@@ -246,9 +330,11 @@ async function runSingleSiteOnTab(site, tabId, config, progressIndex, totalSites
       type: 'OPEN_USER_AND_GROUPS_TAB',
       email
     }).catch(() => {});
-    await sleep(800);
+    await sleep(750);
+    await waitForTabComplete(tabId, 8000);
+    await ensureContentScriptReady(tabId);
 
-    // 3. Ctrl+F "reporting" + Screenshot #1
+    // 4. Ctrl+F "reporting" + Screenshot #1
     await updateRunState({
       statusText: `[${progressIndex}/${totalSites}] ${site.name}: Ctrl+F "${kw1}" + Screenshot...`
     });
@@ -269,7 +355,7 @@ async function runSingleSiteOnTab(site, tabId, config, progressIndex, totalSites
       autoDownload
     });
 
-    // 4. Ctrl+F "tableau" + Screenshot #2
+    // 5. Ctrl+F "tableau" + Screenshot #2
     await updateRunState({
       statusText: `[${progressIndex}/${totalSites}] ${site.name}: Ctrl+F "${kw2}" + Screenshot...`
     });
@@ -290,19 +376,15 @@ async function runSingleSiteOnTab(site, tabId, config, progressIndex, totalSites
       autoDownload
     });
   } else if (site.mode === 'email_search') {
-    // PagerDuty, M365 Admin Center, Lucidchart, Bigstock Admin:
-    // Immediately locate Active User / Email search box -> paste email -> search -> screenshot
+    // PagerDuty ("Find a user by email or name"), Lucidchart ("Search current view"), M365 Admin, Bigstock Admin:
     await updateRunState({
       running: true,
       progress: progressIndex,
       total: totalSites,
       statusText: `[${progressIndex}/${totalSites}] ${site.name}: Searching "${email}"...`
     });
-    await chrome.tabs.sendMessage(tabId, {
-      type: 'LOCATE_AND_PASTE_EMAIL',
-      email
-    }).catch(() => {});
-    await sleep(1100);
+    await pasteEmailInMatchingFrameInput(tabId, email, false);
+    await sleep(1000);
 
     await captureTabEvidence({
       tabId,
@@ -328,7 +410,7 @@ async function runSingleSiteOnTab(site, tabId, config, progressIndex, totalSites
       query: queryToUse,
       showOverlay: true
     }).catch(() => {});
-    await sleep(600);
+    await sleep(550);
 
     await captureTabEvidence({
       tabId,
@@ -343,7 +425,6 @@ async function runSingleSiteOnTab(site, tabId, config, progressIndex, totalSites
   }
 }
 
-// Open all target website tabs simultaneously in parallel so they load at the same time!
 async function startAuditWorkflow(config, targetSiteId = null) {
   await chrome.storage.local.set({ auditConfig: { ...config, configVersion: CONFIG_VERSION } });
 
@@ -372,7 +453,6 @@ async function startAuditWorkflow(config, targetSiteId = null) {
     statusText: `Opening ${sitesToRun.length} site(s) in parallel for fast loading...`
   });
 
-  // Launch all tabs at once so network loading happens in parallel across all 6 sites
   const openedTabs = await Promise.all(
     sitesToRun.map((site, idx) =>
       chrome.tabs.create({ url: site.url, active: idx === 0 })
@@ -420,7 +500,7 @@ async function startAuditWorkflow(config, targetSiteId = null) {
     running: false,
     progress: sitesToRun.length,
     total: sitesToRun.length,
-    statusText: `✅ Done! Captured all screenshots & details. Click "Copy All Screenshots" to paste anywhere!`
+    statusText: `✅ Done! Click "Copy All Captured Screenshots" to paste all images with Ctrl+V!`
   });
 
   const reportUrl = chrome.runtime.getURL('report/report.html');
