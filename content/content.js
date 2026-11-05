@@ -48,7 +48,6 @@
     return results;
   }
 
-  // Create or get the realistic Chrome/Edge Ctrl+F overlay bar
   function getOrCreateCtrlFOverlay() {
     let overlay = document.getElementById('tua-ctrlf-overlay');
     if (!overlay) {
@@ -94,7 +93,7 @@
       return false;
     }
     const rect = el.getBoundingClientRect();
-    return rect.width > 24 && rect.height > 10;
+    return rect.width > 20 && rect.height > 10;
   }
 
   function getElementDescriptorText(el) {
@@ -104,12 +103,93 @@
     const name = el.getAttribute('name') || '';
     const id = el.getAttribute('id') || '';
     const dataTest = el.getAttribute('data-testid') || el.getAttribute('data-test') || el.getAttribute('data-automation-id') || '';
-    // Also check parent/wrapper label text for custom styled search inputs
     const wrapper = el.closest('label, [role="search"], [class*="search" i], [class*="filter" i], div') || el.parentElement;
     const wrapperText = wrapper ? (wrapper.innerText || wrapper.getAttribute('aria-label') || '').slice(0, 120) : '';
     return `${placeholder} ${ariaLabel} ${title} ${name} ${id} ${dataTest} ${wrapperText}`
       .replace(/\s+/g, ' ')
       .toLowerCase();
+  }
+
+  // Dedicated detector for "Email" column input (used by Bigstock Admin & table-filter admin pages)
+  function findEmailColumnInput(allInputs) {
+    // 1. Direct attribute match on input (name="email", id="email", placeholder="Email", data-column="email", etc.)
+    for (const el of allInputs) {
+      const directAttrs = (
+        (el.getAttribute('name') || '') + ' ' +
+        (el.getAttribute('id') || '') + ' ' +
+        (el.getAttribute('placeholder') || '') + ' ' +
+        (el.getAttribute('aria-label') || '') + ' ' +
+        (el.getAttribute('data-column') || '') + ' ' +
+        (el.getAttribute('data-field') || '') + ' ' +
+        (el.className || '')
+      ).toLowerCase();
+      if (directAttrs.includes('email') || directAttrs.includes('e-mail') || el.getAttribute('type') === 'email') {
+        return el;
+      }
+    }
+
+    // 2. Table column header match: find <th> or <td> or <label> whose text is "Email" and find the input in that column!
+    const headersAndLabels = querySelectorAllDeep('th, td, label, [role="columnheader"], .column-header, span, div').filter(el => {
+      if (!isElementVisible(el)) return false;
+      const txt = (el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim().toLowerCase();
+      return txt === 'email' || txt === 'email:' || txt === 'e-mail' || txt === 'email address' || txt === 'user email';
+    });
+
+    for (const hdr of headersAndLabels) {
+      // Case A: Input is inside the same header/cell/label
+      const insideInput = hdr.querySelector && hdr.querySelector('input:not([type="hidden"]):not([type="checkbox"])');
+      if (insideInput && isElementVisible(insideInput)) {
+        return insideInput;
+      }
+
+      // Case B: Input is in the next sibling cell (e.g. <td>Email:</td><td><input></td>)
+      const nextSibling = hdr.nextElementSibling;
+      if (nextSibling) {
+        if (nextSibling.tagName === 'INPUT' && isElementVisible(nextSibling)) return nextSibling;
+        const sibInput = nextSibling.querySelector && nextSibling.querySelector('input:not([type="hidden"]):not([type="checkbox"])');
+        if (sibInput && isElementVisible(sibInput)) return sibInput;
+      }
+
+      // Case C: Table column index match (<th>Email</th> at column index N -> filter <tr> below has <input> at cell index N)
+      const cell = hdr.closest('th, td, [role="columnheader"]');
+      if (cell && cell.parentElement) {
+        const siblings = Array.from(cell.parentElement.children);
+        const colIndex = siblings.indexOf(cell);
+        const table = cell.closest('table, [role="table"], [role="grid"]');
+        if (table && colIndex >= 0) {
+          const rows = Array.from(table.querySelectorAll('tr, [role="row"]'));
+          for (const row of rows) {
+            const targetCell = row.children[colIndex];
+            if (targetCell) {
+              const colInput = targetCell.querySelector('input:not([type="hidden"]):not([type="checkbox"]):not([type="radio"])');
+              if (colInput && isElementVisible(colInput)) {
+                return colInput;
+              }
+            }
+          }
+        }
+      }
+
+      // Case D: Visual column alignment (input horizontally aligned directly below the "Email" column header)
+      const hdrRect = hdr.getBoundingClientRect();
+      let closestAlignedInput = null;
+      let minVerticalDist = 9999;
+      for (const inp of allInputs) {
+        const inpRect = inp.getBoundingClientRect();
+        const horizOverlap = Math.abs(inpRect.left - hdrRect.left) < 55 ||
+          (inpRect.left >= hdrRect.left - 20 && inpRect.right <= hdrRect.right + 40);
+        const vertDist = inpRect.top - hdrRect.top;
+        if (horizOverlap && vertDist >= -5 && vertDist < 160 && vertDist < minVerticalDist) {
+          minVerticalDist = vertDist;
+          closestAlignedInput = inp;
+        }
+      }
+      if (closestAlignedInput) {
+        return closestAlignedInput;
+      }
+    }
+
+    return null;
   }
 
   // Set value on React / Angular / Vue / Ember / Okta / FluentUI controlled input
@@ -138,7 +218,6 @@
     inputEl.dispatchEvent(new win.KeyboardEvent('keyup', { key: value.slice(-1) || 'a', bubbles: true }));
   }
 
-  // Trigger Enter key and optional search button click
   function triggerSearchSubmit(inputEl) {
     const win = inputEl.ownerDocument?.defaultView || window;
     const enterOpts = {
@@ -186,15 +265,21 @@
     }
   }
 
-  // Precision input finder with exact placeholder matches for Lucidchart, PagerDuty, Shutterstock Inc, M365, and Bigstock
-  function findBestUserOrEmailInput(preferUpperPeopleSearch = false) {
+  // Precision input finder with exact matches for Shutterstock Inc, Lucidchart, PagerDuty, Bigstock Email column, and M365
+  function findBestUserOrEmailInput(preferUpperPeopleSearch = false, preferEmailColumn = false) {
     const allInputs = querySelectorAllDeep(
       'input:not([type="hidden"]):not([type="checkbox"]):not([type="radio"]):not([type="file"]):not([type="password"]):not([type="submit"]):not([type="button"]), [role="searchbox"], [role="combobox"]'
     ).filter(isElementVisible);
 
     if (allInputs.length === 0) return null;
 
-    // 1. SHUTTERSTOCK INC / OKTA UPPER SEARCH BAR: "Search for people, apps..."
+    // 1. BIGSTOCK ADMIN / EMAIL COLUMN PRIORITY: Locate the input in the "Email" column
+    if (preferEmailColumn || location.hostname.toLowerCase().includes('bigstock')) {
+      const emailColInput = findEmailColumnInput(allInputs);
+      if (emailColInput) return emailColInput;
+    }
+
+    // 2. SHUTTERSTOCK INC / OKTA UPPER SEARCH BAR: "Search for people, apps..."
     for (const el of allInputs) {
       const desc = getElementDescriptorText(el);
       if (
@@ -207,12 +292,11 @@
       }
     }
     if (preferUpperPeopleSearch) {
-      // On Shutterstock Inc, if upper search bar has generic placeholder in header, pick upper search input
       const upperInputs = allInputs.filter(el => el.getBoundingClientRect().top < 140);
       if (upperInputs.length > 0) return upperInputs[0];
     }
 
-    // 2. LUCIDCHART EXACT MATCH: "Search current view"
+    // 3. LUCIDCHART EXACT MATCH: "Search current view"
     for (const el of allInputs) {
       const desc = getElementDescriptorText(el);
       if (desc.includes('search current view') || desc.includes('current view')) {
@@ -220,7 +304,7 @@
       }
     }
 
-    // 3. PAGERDUTY EXACT MATCH: "Find a user by email or name"
+    // 4. PAGERDUTY EXACT MATCH: "Find a user by email or name"
     for (const el of allInputs) {
       const desc = getElementDescriptorText(el);
       if (
@@ -233,7 +317,7 @@
       }
     }
 
-    // 4. M365 ADMIN CENTER EXACT MATCH: "Search active users list" / "active users"
+    // 5. M365 ADMIN CENTER EXACT MATCH: "Search active users list" / "active users"
     for (const el of allInputs) {
       const desc = getElementDescriptorText(el);
       if (desc.includes('search active users') || desc.includes('active users list')) {
@@ -241,7 +325,11 @@
       }
     }
 
-    // 5. Fallback scoring for remaining admin sites (e.g. Bigstock Admin or alternative views)
+    // 6. Check if there is an explicit Email Column input on the page
+    const emailColFallback = findEmailColumnInput(allInputs);
+    if (emailColFallback) return emailColFallback;
+
+    // 7. General fallback scoring
     let bestEl = null;
     let bestScore = -9999;
 
@@ -251,7 +339,6 @@
       const desc = getElementDescriptorText(el);
       const type = (el.getAttribute('type') || '').toLowerCase();
 
-      // Penalize top global app header bars on non-Shutterstock sites
       const inGlobalHeader = Boolean(
         el.closest &&
         el.closest('header, nav, [role="banner"], #O365_Header, #O365_SearchBoxContainer')
@@ -262,12 +349,11 @@
 
       if (desc.includes('search current view') || desc.includes('find a user by email')) score += 300;
       if (desc.includes('active user') || desc.includes('search users') || desc.includes('filter users')) score += 120;
-      if (desc.includes('email')) score += 90;
+      if (desc.includes('email')) score += 100;
       if (desc.includes('user') || desc.includes('person') || desc.includes('member')) score += 80;
       if (desc.includes('search') || desc.includes('filter') || desc.includes('find') || desc.includes('query')) score += 45;
       if (type === 'search' || type === 'email') score += 35;
 
-      // Prefer inputs inside the main workspace area rather than top bar (0-60px) or left sidebar (<150px)
       if (!preferUpperPeopleSearch) {
         if (rect.top >= 65 && rect.top <= 600) score += 40;
         if (rect.left >= 150) score += 25;
@@ -282,24 +368,21 @@
     return bestEl;
   }
 
-  // Poll every 100ms for the right input to appear so it acts IMMEDIATELY on page load
-  async function waitForUserSearchInput(maxWaitMs = 3500, preferUpperPeopleSearch = false) {
+  async function waitForUserSearchInput(maxWaitMs = 3500, preferUpperPeopleSearch = false, preferEmailColumn = false) {
     const start = Date.now();
     while (Date.now() - start < maxWaitMs) {
-      const inputEl = findBestUserOrEmailInput(preferUpperPeopleSearch);
+      const inputEl = findBestUserOrEmailInput(preferUpperPeopleSearch, preferEmailColumn);
       if (inputEl) return inputEl;
       await sleep(100);
     }
-    return findBestUserOrEmailInput(preferUpperPeopleSearch);
+    return findBestUserOrEmailInput(preferUpperPeopleSearch, preferEmailColumn);
   }
 
-  // Locate Email / Active User box and paste email immediately
-  async function locateAndPasteEmail(email, preferUpperPeopleSearch = false) {
+  async function locateAndPasteEmail(email, preferUpperPeopleSearch = false, preferEmailColumn = false) {
     if (!email) return { foundInput: false, message: 'No email provided' };
 
-    let inputEl = await waitForUserSearchInput(3200, preferUpperPeopleSearch);
+    let inputEl = await waitForUserSearchInput(3200, preferUpperPeopleSearch, preferEmailColumn);
 
-    // If on PagerDuty or Lucidchart and the search input is collapsed behind a search button/icon, click it first
     if (!inputEl) {
       const triggers = querySelectorAllDeep('button, [role="button"], a').filter(el => {
         if (!isElementVisible(el)) return false;
@@ -309,7 +392,7 @@
       if (triggers.length > 0) {
         triggers[0].click();
         await sleep(250);
-        inputEl = findBestUserOrEmailInput(preferUpperPeopleSearch);
+        inputEl = findBestUserOrEmailInput(preferUpperPeopleSearch, preferEmailColumn);
       }
     }
 
@@ -328,8 +411,6 @@
     setNativeInputValue(inputEl, email);
     await sleep(100);
 
-    // For Shutterstock upper search bar ("Search for people, apps..."), typing triggers a live dropdown first;
-    // for other sites, trigger Enter / Search submit immediately.
     const desc = getElementDescriptorText(inputEl);
     const isPeopleDropdownSearch = preferUpperPeopleSearch || desc.includes('search for people') || desc.includes('people, apps');
     if (!isPeopleDropdownSearch) {
@@ -339,18 +420,16 @@
     return {
       foundInput: true,
       isPeopleDropdownSearch,
-      inputDescriptor: inputEl.getAttribute('placeholder') || inputEl.getAttribute('aria-label') || inputEl.tagName,
-      message: `Pasted "${email}" into "${inputEl.getAttribute('placeholder') || 'search box'}"`
+      inputDescriptor: inputEl.getAttribute('placeholder') || inputEl.getAttribute('name') || inputEl.getAttribute('aria-label') || inputEl.tagName,
+      message: `Pasted "${email}" into "${inputEl.getAttribute('placeholder') || inputEl.getAttribute('name') || 'Email column'}"`
     };
   }
 
-  // Shutterstock Inc workflow step: Select user from upper search bar dropdown (or search results), then click Groups tab
   async function selectUserFromSearchDropdown(email) {
     const emailLower = (email || '').toLowerCase().trim();
     const userPrefix = emailLower.split('@')[0] || emailLower;
     if (!emailLower) return { selectedUser: false };
 
-    // Poll for up to 2.2 seconds for the autocomplete dropdown / people search result to appear
     const start = Date.now();
     while (Date.now() - start < 2200) {
       const candidates = querySelectorAllDeep(
@@ -372,8 +451,7 @@
       await sleep(140);
     }
 
-    // If no dropdown option appeared, press Enter on the search input to open the search results page
-    const inputEl = findBestUserOrEmailInput(true);
+    const inputEl = findBestUserOrEmailInput(true, false);
     if (inputEl) {
       triggerSearchSubmit(inputEl);
       await sleep(700);
@@ -392,7 +470,6 @@
     return { selectedUser: false };
   }
 
-  // Click the "Groups" Tab on the user's profile page
   async function openUserAndNavigateToGroupsTab(email) {
     const emailLower = (email || '').toLowerCase().trim();
     const userPrefix = emailLower.split('@')[0] || emailLower;
@@ -426,13 +503,11 @@
       return null;
     };
 
-    // Poll briefly for the Groups tab (in case the user profile page just loaded)
     let groupsTabEl = null;
     for (let attempt = 0; attempt < 12; attempt++) {
       groupsTabEl = findGroupsTabElement();
       if (groupsTabEl) break;
 
-      // If not on the user profile yet, check if the user link is visible on the page and click it
       if (!clickedUser && emailLower) {
         const userLinks = querySelectorAllDeep(
           '[role="option"], a[href*="/person" i], a[href*="/user" i], tr a, [role="row"] a, [role="listitem"] a, td a'
@@ -453,7 +528,6 @@
     if (groupsTabEl) {
       groupsTabEl.scrollIntoView({ behavior: 'instant', block: 'center' });
       groupsTabEl.click();
-      // If groupsTabEl is a <span> inside an <a> or <button>, also click its closest clickable parent
       const clickableParent = groupsTabEl.closest('a, button, [role="tab"], li');
       if (clickableParent && clickableParent !== groupsTabEl) {
         clickableParent.click();
@@ -469,7 +543,6 @@
     };
   }
 
-  // Fast Ctrl+F search + highlight + overlay
   async function performCtrlFSearch(query, showOverlay = true) {
     const cleanQuery = (query || '').trim();
     const overlay = getOrCreateCtrlFOverlay();
@@ -761,7 +834,11 @@
         }
 
         if (message.type === 'LOCATE_AND_PASTE_EMAIL') {
-          const res = await locateAndPasteEmail(message.email, Boolean(message.preferUpperPeopleSearch));
+          const res = await locateAndPasteEmail(
+            message.email,
+            Boolean(message.preferUpperPeopleSearch),
+            Boolean(message.preferEmailColumn)
+          );
           sendResponse({ ok: true, ...res });
           return;
         }
