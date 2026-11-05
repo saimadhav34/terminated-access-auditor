@@ -1,7 +1,5 @@
 // Terminated User Access Auditor - Fast & Frame-Aware MV3 Service Worker
 
-const CONFIG_VERSION = 5;
-
 const DEFAULT_SITES = [
   {
     id: 'site_1',
@@ -40,8 +38,8 @@ const DEFAULT_SITES = [
     index: 5,
     name: 'Bigstock Admin',
     url: '',
-    mode: 'email_search',
-    description: 'Locate Active User / Email field → Paste email & search → Screenshot'
+    mode: 'email_column_search',
+    description: 'Locate Email column field → Paste email & search → Screenshot'
   },
   {
     id: 'site_6',
@@ -54,7 +52,6 @@ const DEFAULT_SITES = [
 ];
 
 const DEFAULT_CONFIG = {
-  configVersion: CONFIG_VERSION,
   userEmail: '',
   keyword1: 'reporting',
   keyword2: 'tableau',
@@ -65,13 +62,9 @@ const DEFAULT_CONFIG = {
 
 chrome.runtime.onInstalled.addListener(async () => {
   const { auditConfig } = await chrome.storage.local.get('auditConfig');
-  if (!auditConfig || auditConfig.configVersion !== CONFIG_VERSION) {
+  if (!auditConfig) {
     await chrome.storage.local.set({
-      auditConfig: {
-        ...DEFAULT_CONFIG,
-        userEmail: auditConfig?.userEmail || '',
-        sites: auditConfig?.sites || DEFAULT_SITES
-      },
+      auditConfig: DEFAULT_CONFIG,
       auditResults: [],
       auditRunState: { running: false, statusText: 'Ready', progress: 0, total: 6 }
     });
@@ -143,28 +136,25 @@ async function ensureContentScriptReady(tabId) {
   }
 }
 
-// Execute across ALL frames (including cross-origin iframes in PagerDuty / Lucidchart) to find exact placeholders
-// like "Find a user by email or name", "Search current view", or "Search for people, apps..."
-async function pasteEmailInMatchingFrameInput(tabId, email, preferUpperPeopleSearch = false) {
-  // First try via main content script (which polls for up to 3.2s)
+async function pasteEmailInMatchingFrameInput(tabId, email, preferUpperPeopleSearch = false, preferEmailColumn = false) {
   const mainRes = await chrome.tabs.sendMessage(tabId, {
     type: 'LOCATE_AND_PASTE_EMAIL',
     email,
-    preferUpperPeopleSearch
+    preferUpperPeopleSearch,
+    preferEmailColumn
   }).catch(() => null);
 
-  // Also execute across all frames in case PagerDuty or Lucidchart rendered the table search bar inside a sub-frame
   try {
     await chrome.scripting.executeScript({
       target: { tabId, allFrames: true },
-      args: [email, preferUpperPeopleSearch],
-      func: (userEmail, isUpperPeople) => {
+      args: [email, preferUpperPeopleSearch, preferEmailColumn],
+      func: (userEmail, isUpperPeople, isEmailCol) => {
         const inputs = Array.from(document.querySelectorAll(
           'input:not([type="hidden"]):not([type="checkbox"]):not([type="radio"]):not([type="password"]), [role="searchbox"], [role="combobox"]'
         )).filter(el => {
           if (el.id === 'tua-ctrlf-input' || el.disabled || el.readOnly) return false;
           const r = el.getBoundingClientRect();
-          return r.width > 24 && r.height > 10;
+          return r.width > 20 && r.height > 10;
         });
 
         let target = null;
@@ -173,9 +163,14 @@ async function pasteEmailInMatchingFrameInput(tabId, email, preferUpperPeopleSea
             (el.getAttribute('placeholder') || '') + ' ' +
             (el.getAttribute('aria-label') || '') + ' ' +
             (el.getAttribute('title') || '') + ' ' +
-            (el.getAttribute('name') || '')
+            (el.getAttribute('name') || '') + ' ' +
+            (el.getAttribute('id') || '')
           ).toLowerCase();
 
+          if (isEmailCol && (desc.includes('email') || desc.includes('e-mail') || el.getAttribute('type') === 'email')) {
+            target = el;
+            break;
+          }
           if (
             desc.includes('search current view') ||
             desc.includes('find a user by email') ||
@@ -295,8 +290,6 @@ async function runSingleSiteOnTab(site, tabId, config, progressIndex, totalSites
   await sleep(settleMs);
 
   if (site.mode === 'user_groups_ctrlf') {
-    // 1. Shutterstock Inc Person:
-    // Type email in upper search bar ("Search for people, apps and user")
     await updateRunState({
       running: true,
       progress: progressIndex,
@@ -304,10 +297,9 @@ async function runSingleSiteOnTab(site, tabId, config, progressIndex, totalSites
       statusText: `[${progressIndex}/${totalSites}] ${site.name}: Searching upper bar ("Search for people, apps...") for "${email}"...`
     });
     if (email) {
-      await pasteEmailInMatchingFrameInput(tabId, email, true);
+      await pasteEmailInMatchingFrameInput(tabId, email, true, false);
       await sleep(500);
 
-      // 2. Select user from dropdown / search results
       await updateRunState({
         statusText: `[${progressIndex}/${totalSites}] ${site.name}: Selecting user "${email}"...`
       });
@@ -316,13 +308,11 @@ async function runSingleSiteOnTab(site, tabId, config, progressIndex, totalSites
         email
       }).catch(() => {});
 
-      // Wait briefly in case selecting the user navigated to the user's profile URL
       await sleep(750);
       await waitForTabComplete(tabId, 10000);
       await ensureContentScriptReady(tabId);
     }
 
-    // 3. Click Groups tab on user profile
     await updateRunState({
       statusText: `[${progressIndex}/${totalSites}] ${site.name}: Opening Groups tab...`
     });
@@ -334,7 +324,6 @@ async function runSingleSiteOnTab(site, tabId, config, progressIndex, totalSites
     await waitForTabComplete(tabId, 8000);
     await ensureContentScriptReady(tabId);
 
-    // 4. Ctrl+F "reporting" + Screenshot #1
     await updateRunState({
       statusText: `[${progressIndex}/${totalSites}] ${site.name}: Ctrl+F "${kw1}" + Screenshot...`
     });
@@ -355,7 +344,6 @@ async function runSingleSiteOnTab(site, tabId, config, progressIndex, totalSites
       autoDownload
     });
 
-    // 5. Ctrl+F "tableau" + Screenshot #2
     await updateRunState({
       statusText: `[${progressIndex}/${totalSites}] ${site.name}: Ctrl+F "${kw2}" + Screenshot...`
     });
@@ -375,29 +363,28 @@ async function runSingleSiteOnTab(site, tabId, config, progressIndex, totalSites
       hideCtrlFOverlay: false,
       autoDownload
     });
-  } else if (site.mode === 'email_search') {
-    // PagerDuty ("Find a user by email or name"), Lucidchart ("Search current view"), M365 Admin, Bigstock Admin:
+  } else if (site.mode === 'email_column_search' || site.mode === 'email_search') {
+    const isEmailCol = site.mode === 'email_column_search' || site.id === 'site_5';
     await updateRunState({
       running: true,
       progress: progressIndex,
       total: totalSites,
-      statusText: `[${progressIndex}/${totalSites}] ${site.name}: Searching "${email}"...`
+      statusText: `[${progressIndex}/${totalSites}] ${site.name}: Pasting "${email}" in ${isEmailCol ? 'Email column' : 'search field'}...`
     });
-    await pasteEmailInMatchingFrameInput(tabId, email, false);
+    await pasteEmailInMatchingFrameInput(tabId, email, false, isEmailCol);
     await sleep(1000);
 
     await captureTabEvidence({
       tabId,
       siteName: site.name,
       siteIndex: site.index,
-      stepLabel: 'Active_User_Email_Search',
+      stepLabel: isEmailCol ? 'Email_Column_Search' : 'Active_User_Email_Search',
       activeQuery: email,
       email,
       hideCtrlFOverlay: true,
       autoDownload
     });
   } else if (site.mode === 'ctrlf_sheet') {
-    // Google Sheet: Ctrl+F email -> screenshot
     const queryToUse = email || kw1;
     await updateRunState({
       running: true,
@@ -426,7 +413,7 @@ async function runSingleSiteOnTab(site, tabId, config, progressIndex, totalSites
 }
 
 async function startAuditWorkflow(config, targetSiteId = null) {
-  await chrome.storage.local.set({ auditConfig: { ...config, configVersion: CONFIG_VERSION } });
+  await chrome.storage.local.set({ auditConfig: config });
 
   const sitesToRun = (config.sites || DEFAULT_SITES).filter(s => {
     if (!s.url || !s.url.trim()) return false;
