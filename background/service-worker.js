@@ -1,6 +1,6 @@
-// Terminated User Access Auditor - MV3 Service Worker
+// Terminated User Access Auditor - Fast MV3 Service Worker
 
-const CONFIG_VERSION = 3;
+const CONFIG_VERSION = 4;
 
 const DEFAULT_SITES = [
   {
@@ -58,7 +58,7 @@ const DEFAULT_CONFIG = {
   userEmail: '',
   keyword1: 'reporting',
   keyword2: 'tableau',
-  pageLoadWaitSec: 5,
+  pageLoadWaitSec: 1,
   autoDownloadScreenshots: false,
   sites: DEFAULT_SITES
 };
@@ -69,7 +69,8 @@ chrome.runtime.onInstalled.addListener(async () => {
     await chrome.storage.local.set({
       auditConfig: {
         ...DEFAULT_CONFIG,
-        userEmail: auditConfig?.userEmail || ''
+        userEmail: auditConfig?.userEmail || '',
+        sites: auditConfig?.sites || DEFAULT_SITES
       },
       auditResults: [],
       auditRunState: { running: false, statusText: 'Ready', progress: 0, total: 6 }
@@ -101,8 +102,8 @@ async function appendAuditResult(entry) {
   await chrome.storage.local.set({ auditResults });
 }
 
-// Wait for a tab to finish loading
-async function waitForTabComplete(tabId, timeoutMs = 18000) {
+// Fast poll (every 150ms) for tab load completion
+async function waitForTabComplete(tabId, timeoutMs = 12000) {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
     try {
@@ -113,7 +114,7 @@ async function waitForTabComplete(tabId, timeoutMs = 18000) {
     } catch (_) {
       break;
     }
-    await sleep(400);
+    await sleep(150);
   }
   return chrome.tabs.get(tabId).catch(() => null);
 }
@@ -137,17 +138,17 @@ async function ensureContentScriptReady(tabId) {
       target: { tabId },
       files: ['content/content.js']
     });
-    await sleep(250);
+    await sleep(80);
     return true;
   } catch (_) {
     return false;
   }
 }
 
-// Capture screenshot of a specific tab cleanly
+// Capture screenshot of a specific tab quickly and cleanly
 async function captureTabEvidence({ tabId, siteName, siteIndex, stepLabel, activeQuery, email, hideCtrlFOverlay = false, autoDownload = false }) {
   const tab = await chrome.tabs.update(tabId, { active: true });
-  await sleep(350);
+  await sleep(160);
 
   let details = {
     url: tab?.url || '',
@@ -171,7 +172,7 @@ async function captureTabEvidence({ tabId, siteName, siteIndex, stepLabel, activ
     }
   } catch (_) {}
 
-  await sleep(200);
+  await sleep(90);
   const screenshotDataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, { format: 'png' });
 
   try {
@@ -207,64 +208,58 @@ async function captureTabEvidence({ tabId, siteName, siteIndex, stepLabel, activ
   return entry;
 }
 
-// Execute automation for a single site configuration
-async function runSingleSiteAudit(site, config, progressIndex, totalSites) {
+// Execute fast automation on a pre-opened tab
+async function runSingleSiteOnTab(site, tabId, config, progressIndex, totalSites) {
   const email = (config.userEmail || '').trim();
   const kw1 = (config.keyword1 || 'reporting').trim();
   const kw2 = (config.keyword2 || 'tableau').trim();
-  const waitMs = Math.max(2000, (Number(config.pageLoadWaitSec) || 5) * 1000);
+  const settleMs = Math.max(300, (Number(config.pageLoadWaitSec) || 1) * 600);
   const autoDownload = Boolean(config.autoDownloadScreenshots);
 
-  await updateRunState({
-    running: true,
-    progress: progressIndex,
-    total: totalSites,
-    currentSiteName: site.name,
-    statusText: `[${progressIndex}/${totalSites}] Opening ${site.name}...`
-  });
-
-  const tab = await chrome.tabs.create({ url: site.url, active: true });
-  await waitForTabComplete(tab.id, 20000);
-  await sleep(waitMs);
-
-  await ensureContentScriptReady(tab.id);
+  await chrome.tabs.update(tabId, { active: true });
+  await waitForTabComplete(tabId, 12000);
+  await ensureContentScriptReady(tabId);
+  await sleep(settleMs);
 
   if (site.mode === 'user_groups_ctrlf') {
-    // Shutterstock Inc Person workflow:
-    // 1. Locate user/person search field, paste email, and search
+    // Shutterstock Inc Person:
+    // 1. Immediately locate user/person box & paste email
     await updateRunState({
-      statusText: `[${progressIndex}/${totalSites}] ${site.name}: Searching user "${email}"...`
+      running: true,
+      progress: progressIndex,
+      total: totalSites,
+      statusText: `[${progressIndex}/${totalSites}] ${site.name}: Searching "${email}"...`
     });
     if (email) {
-      await chrome.tabs.sendMessage(tab.id, {
+      await chrome.tabs.sendMessage(tabId, {
         type: 'LOCATE_AND_PASTE_EMAIL',
         email
       }).catch(() => {});
-      await sleep(2500);
+      await sleep(1100);
     }
 
-    // 2. Open user profile (if result link exists) and switch to Groups tab
+    // 2. Open user & click Groups tab
     await updateRunState({
       statusText: `[${progressIndex}/${totalSites}] ${site.name}: Opening Groups tab...`
     });
-    await chrome.tabs.sendMessage(tab.id, {
+    await chrome.tabs.sendMessage(tabId, {
       type: 'OPEN_USER_AND_GROUPS_TAB',
       email
     }).catch(() => {});
-    await sleep(1800);
+    await sleep(800);
 
-    // 3. Ctrl+F Keyword 1 ("reporting") + Screenshot #1
+    // 3. Ctrl+F "reporting" + Screenshot #1
     await updateRunState({
-      statusText: `[${progressIndex}/${totalSites}] ${site.name}: Ctrl+F "${kw1}" & capturing screenshot...`
+      statusText: `[${progressIndex}/${totalSites}] ${site.name}: Ctrl+F "${kw1}" + Screenshot...`
     });
-    await chrome.tabs.sendMessage(tab.id, {
+    await chrome.tabs.sendMessage(tabId, {
       type: 'RUN_CTRLF_SEARCH',
       query: kw1,
       showOverlay: true
     }).catch(() => {});
-    await sleep(900);
+    await sleep(300);
     await captureTabEvidence({
-      tabId: tab.id,
+      tabId,
       siteName: site.name,
       siteIndex: site.index,
       stepLabel: `Groups_CtrlF_${kw1}`,
@@ -274,18 +269,18 @@ async function runSingleSiteAudit(site, config, progressIndex, totalSites) {
       autoDownload
     });
 
-    // 4. Ctrl+F Keyword 2 ("tableau") + Screenshot #2
+    // 4. Ctrl+F "tableau" + Screenshot #2
     await updateRunState({
-      statusText: `[${progressIndex}/${totalSites}] ${site.name}: Ctrl+F "${kw2}" & capturing screenshot...`
+      statusText: `[${progressIndex}/${totalSites}] ${site.name}: Ctrl+F "${kw2}" + Screenshot...`
     });
-    await chrome.tabs.sendMessage(tab.id, {
+    await chrome.tabs.sendMessage(tabId, {
       type: 'RUN_CTRLF_SEARCH',
       query: kw2,
       showOverlay: true
     }).catch(() => {});
-    await sleep(900);
+    await sleep(300);
     await captureTabEvidence({
-      tabId: tab.id,
+      tabId,
       siteName: site.name,
       siteIndex: site.index,
       stepLabel: `Groups_CtrlF_${kw2}`,
@@ -296,21 +291,21 @@ async function runSingleSiteAudit(site, config, progressIndex, totalSites) {
     });
   } else if (site.mode === 'email_search') {
     // PagerDuty, M365 Admin Center, Lucidchart, Bigstock Admin:
-    // Locate active user / email search field -> paste email -> search -> gather details & screenshot
+    // Immediately locate Active User / Email search box -> paste email -> search -> screenshot
     await updateRunState({
-      statusText: `[${progressIndex}/${totalSites}] ${site.name}: Locating active user / email field & searching "${email}"...`
+      running: true,
+      progress: progressIndex,
+      total: totalSites,
+      statusText: `[${progressIndex}/${totalSites}] ${site.name}: Searching "${email}"...`
     });
-    await chrome.tabs.sendMessage(tab.id, {
+    await chrome.tabs.sendMessage(tabId, {
       type: 'LOCATE_AND_PASTE_EMAIL',
       email
     }).catch(() => {});
-    await sleep(2800);
+    await sleep(1100);
 
-    await updateRunState({
-      statusText: `[${progressIndex}/${totalSites}] ${site.name}: Gathering details & capturing screenshot...`
-    });
     await captureTabEvidence({
-      tabId: tab.id,
+      tabId,
       siteName: site.name,
       siteIndex: site.index,
       stepLabel: 'Active_User_Email_Search',
@@ -320,21 +315,23 @@ async function runSingleSiteAudit(site, config, progressIndex, totalSites) {
       autoDownload
     });
   } else if (site.mode === 'ctrlf_sheet') {
-    // Google Sheet:
-    // Ctrl+F and search for the terminated user email -> gather details & screenshot
+    // Google Sheet: Ctrl+F email -> screenshot
     const queryToUse = email || kw1;
     await updateRunState({
-      statusText: `[${progressIndex}/${totalSites}] ${site.name}: Ctrl+F searching email "${queryToUse}"...`
+      running: true,
+      progress: progressIndex,
+      total: totalSites,
+      statusText: `[${progressIndex}/${totalSites}] ${site.name}: Ctrl+F "${queryToUse}"...`
     });
-    await chrome.tabs.sendMessage(tab.id, {
+    await chrome.tabs.sendMessage(tabId, {
       type: 'RUN_CTRLF_SEARCH',
       query: queryToUse,
       showOverlay: true
     }).catch(() => {});
-    await sleep(1500);
+    await sleep(600);
 
     await captureTabEvidence({
-      tabId: tab.id,
+      tabId,
       siteName: site.name,
       siteIndex: site.index,
       stepLabel: 'Google_Sheet_CtrlF_Email',
@@ -346,7 +343,7 @@ async function runSingleSiteAudit(site, config, progressIndex, totalSites) {
   }
 }
 
-// Run all enabled sites (or a specific single site)
+// Open all target website tabs simultaneously in parallel so they load at the same time!
 async function startAuditWorkflow(config, targetSiteId = null) {
   await chrome.storage.local.set({ auditConfig: { ...config, configVersion: CONFIG_VERSION } });
 
@@ -372,8 +369,15 @@ async function startAuditWorkflow(config, targetSiteId = null) {
     running: true,
     progress: 0,
     total: sitesToRun.length,
-    statusText: `Starting audit across ${sitesToRun.length} site(s)...`
+    statusText: `Opening ${sitesToRun.length} site(s) in parallel for fast loading...`
   });
+
+  // Launch all tabs at once so network loading happens in parallel across all 6 sites
+  const openedTabs = await Promise.all(
+    sitesToRun.map((site, idx) =>
+      chrome.tabs.create({ url: site.url, active: idx === 0 })
+    )
+  );
 
   for (let i = 0; i < sitesToRun.length; i++) {
     const { auditRunState } = await chrome.storage.local.get('auditRunState');
@@ -387,8 +391,9 @@ async function startAuditWorkflow(config, targetSiteId = null) {
     }
 
     const site = sitesToRun[i];
+    const tab = openedTabs[i];
     try {
-      await runSingleSiteAudit(site, config, i + 1, sitesToRun.length);
+      await runSingleSiteOnTab(site, tab.id, config, i + 1, sitesToRun.length);
     } catch (err) {
       await appendAuditResult({
         siteIndex: site.index,
@@ -415,7 +420,7 @@ async function startAuditWorkflow(config, targetSiteId = null) {
     running: false,
     progress: sitesToRun.length,
     total: sitesToRun.length,
-    statusText: `Completed! Gathered details & screenshots for ${sitesToRun.length} site(s).`
+    statusText: `✅ Done! Captured all screenshots & details. Click "Copy All Screenshots" to paste anywhere!`
   });
 
   const reportUrl = chrome.runtime.getURL('report/report.html');
