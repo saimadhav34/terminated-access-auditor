@@ -1,4 +1,4 @@
-// Terminated User Access Auditor - Full Report & Screenshots Logic
+// Terminated User Access Auditor - Full Report & Pure Screenshots Logic
 
 const summaryTableBody = document.getElementById('summaryTableBody');
 const screenshotsGrid = document.getElementById('screenshotsGrid');
@@ -21,7 +21,6 @@ function escapeHtml(str) {
     .replace(/"/g, '&quot;');
 }
 
-// Helper: load a dataURL into an HTMLImageElement
 function loadImage(dataUrl) {
   return new Promise((resolve, reject) => {
     const img = new Image();
@@ -31,8 +30,7 @@ function loadImage(dataUrl) {
   });
 }
 
-// Stitch all screenshots vertically onto a single high-res PNG Blob + build Rich HTML with all <img> tags
-// so pressing Ctrl+V anywhere (Jira, Slack, Teams, Outlook, Gmail, Docs, Word) pastes ALL images at once!
+// Copy ONLY pure screenshots (zero text, zero headers, zero "Query:" labels)
 async function copyAllScreenshotsToClipboard(results) {
   const validShots = (results || []).filter(r => r.screenshotDataUrl);
   if (validShots.length === 0) {
@@ -41,11 +39,10 @@ async function copyAllScreenshotsToClipboard(results) {
 
   const loadedImages = await Promise.all(validShots.map(r => loadImage(r.screenshotDataUrl)));
 
-  const HEADER_HEIGHT = 46;
-  const GAP_HEIGHT = 18;
+  const GAP_HEIGHT = 8;
   const maxWidth = Math.max(...loadedImages.map(img => img.naturalWidth || img.width || 1280));
   const totalHeight = loadedImages.reduce(
-    (sum, img) => sum + HEADER_HEIGHT + (img.naturalHeight || img.height || 720) + GAP_HEIGHT,
+    (sum, img, idx) => sum + (img.naturalHeight || img.height || 720) + (idx < loadedImages.length - 1 ? GAP_HEIGHT : 0),
     0
   );
 
@@ -54,39 +51,19 @@ async function copyAllScreenshotsToClipboard(results) {
   canvas.height = totalHeight;
   const ctx = canvas.getContext('2d');
 
-  ctx.fillStyle = '#0f172a';
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
-
   let yOffset = 0;
   for (let i = 0; i < validShots.length; i++) {
-    const item = validShots[i];
     const img = loadedImages[i];
     const w = img.naturalWidth || img.width;
     const h = img.naturalHeight || img.height;
-
-    // Draw dark header bar above each screenshot
-    ctx.fillStyle = '#1e293b';
-    ctx.fillRect(0, yOffset, canvas.width, HEADER_HEIGHT);
-
-    ctx.fillStyle = '#38bdf8';
-    ctx.font = 'bold 18px Segoe UI, Arial, sans-serif';
-    const titleText = `${i + 1}. ${item.siteName || 'Website'} — ${item.stepLabel || ''} (Query: ${item.activeQuery || 'N/A'})`;
-    ctx.fillText(titleText, 16, yOffset + 29);
-
-    yOffset += HEADER_HEIGHT;
     ctx.drawImage(img, 0, yOffset, w, h);
     yOffset += h + GAP_HEIGHT;
   }
 
   const stitchedPngBlob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
 
-  // Also construct HTML with every individual image so Rich Text editors (Word/Docs/Outlook/Gmail) can paste them as individual images
-  const htmlParts = validShots.map((r, i) => `
-    <div style="margin-bottom:16px;">
-      <p><strong>${i + 1}. ${escapeHtml(r.siteName)} — ${escapeHtml(r.stepLabel)} (${escapeHtml(r.activeQuery || '')})</strong></p>
-      <img src="${r.screenshotDataUrl}" alt="${escapeHtml(r.siteName)}" style="max-width:100%;border:1px solid #cbd5e1;" />
-    </div>
-  `).join('');
+  // Pure <img> tags only — no text or headers at all
+  const htmlParts = validShots.map(r => `<img src="${r.screenshotDataUrl}" style="max-width:100%;display:block;margin-bottom:8px;" />`).join('');
   const htmlBlob = new Blob([`<div>${htmlParts}</div>`], { type: 'text/html' });
 
   await navigator.clipboard.write([
@@ -97,7 +74,6 @@ async function copyAllScreenshotsToClipboard(results) {
   ]);
 }
 
-// Copy a single screenshot image to clipboard
 async function copySingleScreenshotToClipboard(dataUrl) {
   const res = await fetch(dataUrl);
   const blob = await res.blob();
@@ -114,13 +90,13 @@ async function loadAndRenderReport() {
   cachedConfig = auditConfig;
 
   if (auditConfig?.userEmail) {
-    reportSubtitle.textContent = `Terminated User Checked: ${auditConfig.userEmail} • Total Captures: ${auditResults.length}`;
+    reportSubtitle.textContent = `Terminated User Checked: ${auditConfig.userEmail} • Total Screenshots: ${auditResults.length}`;
   }
 
   if (auditResults.length === 0) {
     summaryTableBody.innerHTML = `
       <tr>
-        <td colspan="7" class="empty-cell">No audit results captured yet. Open the extension and click "Run All 6 Websites & Take Screenshots".</td>
+        <td colspan="7" class="empty-cell">No audit results captured yet. Open the extension and click "Run All 6 Websites Fast & Screenshot".</td>
       </tr>
     `;
     screenshotsGrid.innerHTML = '';
@@ -147,10 +123,7 @@ async function loadAndRenderReport() {
             ${escapeHtml((d.url || '').slice(0, 65))}
           </a>
         </td>
-        <td>
-          <strong>${escapeHtml(r.stepLabel || '')}</strong><br/>
-          ${r.activeQuery ? `<span style="color:#fde047;font-size:11.5px;">Query: "${escapeHtml(r.activeQuery)}"</span>` : ''}
-        </td>
+        <td><strong>${escapeHtml(r.stepLabel || '')}</strong></td>
         <td>${escapeHtml(d.emailChecked || auditConfig?.userEmail || '—')}</td>
         <td><span class="${badgeClass}">${escapeHtml(verdict)}</span></td>
         <td>
@@ -162,36 +135,23 @@ async function loadAndRenderReport() {
     `;
   }).join('');
 
-  // Render Screenshots Grid
-  screenshotsGrid.innerHTML = auditResults.map((r, i) => {
-    const d = r.details || {};
-    return `
-      <article class="shot-card">
-        <div class="shot-card-header">
-          <div>
-            <div class="shot-title">${i + 1}. ${escapeHtml(r.siteName)} — ${escapeHtml(r.stepLabel)}</div>
-            <div class="shot-meta">
-              Query: <strong>${escapeHtml(r.activeQuery || 'N/A')}</strong> • Captured: ${new Date(r.capturedAt).toLocaleString()}
-            </div>
-          </div>
-          <div style="display:flex;gap:6px;">
-            <button class="btn btn-primary" data-copy-idx="${i}">📋 Copy Image</button>
-            <button class="btn btn-secondary" data-dl-idx="${i}">⬇️ Save PNG</button>
-          </div>
+  // Render Pure Screenshots Grid (no Query / URL / Verdict text around screenshots)
+  screenshotsGrid.innerHTML = auditResults.map((r, i) => `
+    <article class="shot-card">
+      <div class="shot-card-header" style="justify-content:flex-end;">
+        <div style="display:flex;gap:6px;">
+          <button class="btn btn-primary" data-copy-idx="${i}">📋 Copy Image</button>
+          <button class="btn btn-secondary" data-dl-idx="${i}">⬇️ Save PNG</button>
         </div>
-        <div class="shot-img-wrap">
-          ${r.screenshotDataUrl
-            ? `<img src="${r.screenshotDataUrl}" alt="${escapeHtml(r.siteName)} screenshot" />`
-            : `<div style="padding:24px;color:#94a3b8;">No screenshot image available</div>`
-          }
-        </div>
-        <div class="shot-details-box">
-          <div><strong>URL:</strong> ${escapeHtml(d.url || '')}</div>
-          <div><strong>Access Verdict:</strong> ${escapeHtml(d.accessVerdict || '')} (reporting matches: ${d.reportingMatchCount ?? 0}, tableau matches: ${d.tableauMatchCount ?? 0})</div>
-        </div>
-      </article>
-    `;
-  }).join('');
+      </div>
+      <div class="shot-img-wrap">
+        ${r.screenshotDataUrl
+          ? `<img src="${r.screenshotDataUrl}" alt="Screenshot ${i + 1}" />`
+          : `<div style="padding:24px;color:#94a3b8;">No screenshot image available</div>`
+        }
+      </div>
+    </article>
+  `).join('');
 
   screenshotsGrid.querySelectorAll('button[data-copy-idx]').forEach(btn => {
     btn.addEventListener('click', async () => {
@@ -254,46 +214,14 @@ exportHtmlReportBtn.addEventListener('click', async () => {
 <html>
 <head>
 <meta charset="UTF-8">
-<title>Terminated User Access Audit - ${escapeHtml(email)}</title>
+<title>Screenshots - ${escapeHtml(email)}</title>
 <style>
-  body { font-family: Segoe UI, Arial, sans-serif; margin: 24px; color: #0f172a; background: #f8fafc; }
-  h1 { margin-bottom: 4px; }
-  table { width: 100%; border-collapse: collapse; margin: 16px 0 28px; background: #fff; }
-  th, td { border: 1px solid #cbd5e1; padding: 8px 10px; text-align: left; font-size: 13px; }
-  th { background: #e2e8f0; }
-  .shot { background: #fff; border: 1px solid #cbd5e1; border-radius: 8px; padding: 14px; margin-bottom: 20px; page-break-inside: avoid; }
-  .shot img { max-width: 100%; border: 1px solid #94a3b8; margin-top: 10px; }
+  body { margin: 16px; background: #ffffff; }
+  img { max-width: 100%; display: block; margin-bottom: 12px; border: 1px solid #cbd5e1; }
 </style>
 </head>
 <body>
-  <h1>Terminated User Access Audit Evidence Report</h1>
-  <p><strong>Terminated User Email:</strong> ${escapeHtml(email)} | <strong>Generated:</strong> ${new Date().toLocaleString()}</p>
-  <table>
-    <thead>
-      <tr>
-        <th>#</th><th>Website</th><th>Step / Query</th><th>Access Verdict</th><th>reporting / tableau</th><th>URL</th>
-      </tr>
-    </thead>
-    <tbody>
-      ${cachedResults.map((r, i) => `
-        <tr>
-          <td>${i + 1}</td>
-          <td>${escapeHtml(r.siteName)}</td>
-          <td>${escapeHtml(r.stepLabel)} (${escapeHtml(r.activeQuery || '')})</td>
-          <td>${escapeHtml(r.details?.accessVerdict || '')}</td>
-          <td>reporting: ${r.details?.reportingMatchCount ?? 0}, tableau: ${r.details?.tableauMatchCount ?? 0}</td>
-          <td>${escapeHtml(r.details?.url || '')}</td>
-        </tr>
-      `).join('')}
-    </tbody>
-  </table>
-  ${cachedResults.map((r, i) => `
-    <div class="shot">
-      <h3>${i + 1}. ${escapeHtml(r.siteName)} — ${escapeHtml(r.stepLabel)} (Query: "${escapeHtml(r.activeQuery || '')}")</h3>
-      <div><strong>URL:</strong> ${escapeHtml(r.details?.url || '')} | <strong>Verdict:</strong> ${escapeHtml(r.details?.accessVerdict || '')}</div>
-      ${r.screenshotDataUrl ? `<img src="${r.screenshotDataUrl}" />` : ''}
-    </div>
-  `).join('')}
+  ${cachedResults.map(r => r.screenshotDataUrl ? `<img src="${r.screenshotDataUrl}" />` : '').join('')}
 </body>
 </html>`;
 
@@ -301,7 +229,7 @@ exportHtmlReportBtn.addEventListener('click', async () => {
   const url = URL.createObjectURL(blob);
   await chrome.downloads.download({
     url,
-    filename: `Terminated_Access_Audit_Report_${safeEmail}.html`,
+    filename: `Terminated_Access_Screenshots_${safeEmail}.html`,
     saveAs: true
   });
 });
@@ -317,11 +245,9 @@ copySummaryBtn.addEventListener('click', async () => {
   cachedResults.forEach((r, idx) => {
     const d = r.details || {};
     lines.push(
-      `${idx + 1}. ${r.siteName} [${r.stepLabel} | Query: "${r.activeQuery || ''}"]`,
-      `   - URL: ${d.url || ''}`,
+      `${idx + 1}. ${r.siteName}`,
       `   - Verdict: ${d.accessVerdict || ''}`,
-      `   - Group Keywords: reporting=${d.reportingMatchCount ?? 0}, tableau=${d.tableauMatchCount ?? 0}`,
-      `   - Screenshot: ${r.filename || 'Captured'}`
+      `   - Group Keywords: reporting=${d.reportingMatchCount ?? 0}, tableau=${d.tableauMatchCount ?? 0}`
     );
   });
   await navigator.clipboard.writeText(lines.join('\n'));
