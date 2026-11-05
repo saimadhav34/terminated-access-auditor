@@ -6,6 +6,7 @@ const autoDownloadCheck = document.getElementById('autoDownloadCheck');
 const saveLinksBtn = document.getElementById('saveLinksBtn');
 const runAllBtn = document.getElementById('runAllBtn');
 const stopBtn = document.getElementById('stopBtn');
+const copyAllPopupBtn = document.getElementById('copyAllPopupBtn');
 const openSidePanelBtn = document.getElementById('openSidePanelBtn');
 const openReportBtn = document.getElementById('openReportBtn');
 const shotCountBadge = document.getElementById('shotCountBadge');
@@ -57,6 +58,88 @@ const SITE_DEFINITIONS = [
   }
 ];
 
+function escapeHtml(str) {
+  return String(str || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+function loadImage(dataUrl) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = reject;
+    img.src = dataUrl;
+  });
+}
+
+// Copy all captured screenshots into the clipboard (both stitched PNG + individual HTML <img>s)
+async function copyAllScreenshotsFromStorage() {
+  const { auditResults = [] } = await chrome.storage.local.get('auditResults');
+  const validShots = auditResults.filter(r => r.screenshotDataUrl);
+  if (validShots.length === 0) {
+    throw new Error('No screenshots captured yet.');
+  }
+
+  const loadedImages = await Promise.all(validShots.map(r => loadImage(r.screenshotDataUrl)));
+  const HEADER_HEIGHT = 46;
+  const GAP_HEIGHT = 18;
+  const maxWidth = Math.max(...loadedImages.map(img => img.naturalWidth || img.width || 1280));
+  const totalHeight = loadedImages.reduce(
+    (sum, img) => sum + HEADER_HEIGHT + (img.naturalHeight || img.height || 720) + GAP_HEIGHT,
+    0
+  );
+
+  const canvas = document.createElement('canvas');
+  canvas.width = maxWidth;
+  canvas.height = totalHeight;
+  const ctx = canvas.getContext('2d');
+
+  ctx.fillStyle = '#0f172a';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  let yOffset = 0;
+  for (let i = 0; i < validShots.length; i++) {
+    const item = validShots[i];
+    const img = loadedImages[i];
+    const w = img.naturalWidth || img.width;
+    const h = img.naturalHeight || img.height;
+
+    ctx.fillStyle = '#1e293b';
+    ctx.fillRect(0, yOffset, canvas.width, HEADER_HEIGHT);
+
+    ctx.fillStyle = '#38bdf8';
+    ctx.font = 'bold 18px Segoe UI, Arial, sans-serif';
+    const titleText = `${i + 1}. ${item.siteName || 'Website'} — ${item.stepLabel || ''} (Query: ${item.activeQuery || 'N/A'})`;
+    ctx.fillText(titleText, 16, yOffset + 29);
+
+    yOffset += HEADER_HEIGHT;
+    ctx.drawImage(img, 0, yOffset, w, h);
+    yOffset += h + GAP_HEIGHT;
+  }
+
+  const stitchedPngBlob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
+
+  const htmlParts = validShots.map((r, i) => `
+    <div style="margin-bottom:16px;">
+      <p><strong>${i + 1}. ${escapeHtml(r.siteName)} — ${escapeHtml(r.stepLabel)} (${escapeHtml(r.activeQuery || '')})</strong></p>
+      <img src="${r.screenshotDataUrl}" alt="${escapeHtml(r.siteName)}" style="max-width:100%;border:1px solid #cbd5e1;" />
+    </div>
+  `).join('');
+  const htmlBlob = new Blob([`<div>${htmlParts}</div>`], { type: 'text/html' });
+
+  await navigator.clipboard.write([
+    new ClipboardItem({
+      'image/png': stitchedPngBlob,
+      'text/html': htmlBlob
+    })
+  ]);
+
+  return validShots.length;
+}
+
 async function collectAndSaveConfig(showFeedback = true) {
   const sites = SITE_DEFINITIONS.map(def => {
     const inputEl = document.getElementById(def.inputId);
@@ -70,11 +153,11 @@ async function collectAndSaveConfig(showFeedback = true) {
   });
 
   const nextConfig = {
-    configVersion: 3,
+    configVersion: 4,
     userEmail: userEmailInput.value.trim(),
     keyword1: 'reporting',
     keyword2: 'tableau',
-    pageLoadWaitSec: Math.max(2, Number(waitSecInput.value) || 5),
+    pageLoadWaitSec: Math.max(0, Number(waitSecInput.value) || 1),
     autoDownloadScreenshots: autoDownloadCheck.checked,
     sites
   };
@@ -94,9 +177,9 @@ async function refreshUIFromStorage() {
     'auditResults'
   ]);
 
-  if (auditConfig && auditConfig.configVersion === 3) {
+  if (auditConfig && (auditConfig.configVersion === 3 || auditConfig.configVersion === 4)) {
     userEmailInput.value = auditConfig.userEmail || '';
-    waitSecInput.value = auditConfig.pageLoadWaitSec || 5;
+    waitSecInput.value = auditConfig.configVersion === 4 ? (auditConfig.pageLoadWaitSec ?? 1) : 1;
     autoDownloadCheck.checked = Boolean(auditConfig.autoDownloadScreenshots);
 
     SITE_DEFINITIONS.forEach(def => {
@@ -107,7 +190,6 @@ async function refreshUIFromStorage() {
       }
     });
   } else {
-    // Initialize clean empty inputs so the extension explicitly asks for email + 6 site links
     await collectAndSaveConfig(false);
   }
 
@@ -127,11 +209,10 @@ function applyRunState(runState) {
     statusDot.classList.remove('running');
     stopBtn.classList.add('hidden');
     runAllBtn.disabled = false;
-    runAllBtn.textContent = '🚀 Run All 6 Websites & Take Screenshots';
+    runAllBtn.textContent = '⚡ Run All 6 Websites Fast & Screenshot';
   }
 }
 
-// Listen for live storage updates
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area !== 'local') return;
   if (changes.auditRunState) {
@@ -143,7 +224,6 @@ chrome.storage.onChanged.addListener((changes, area) => {
   }
 });
 
-// Auto-save whenever inputs change
 [userEmailInput, waitSecInput, autoDownloadCheck].forEach(el => {
   el.addEventListener('change', () => collectAndSaveConfig(false));
 });
@@ -155,7 +235,6 @@ SITE_DEFINITIONS.forEach(def => {
   }
 });
 
-// Run individual site button
 document.querySelectorAll('button[data-run-id]').forEach(btn => {
   btn.addEventListener('click', async () => {
     const siteId = btn.getAttribute('data-run-id');
@@ -192,7 +271,7 @@ runAllBtn.addEventListener('click', async () => {
 
   const providedSites = cfg.sites.filter(s => s.url && s.url.length > 0);
   if (providedSites.length === 0) {
-    statusText.textContent = '⚠️ Please paste the links for your websites (Shutterstock, PagerDuty, M365, Lucidchart, Bigstock, Google Sheet) first.';
+    statusText.textContent = '⚠️ Please paste the links for your websites first.';
     document.getElementById('url_site_1')?.focus();
     return;
   }
@@ -205,6 +284,21 @@ runAllBtn.addEventListener('click', async () => {
 
 stopBtn.addEventListener('click', async () => {
   await chrome.runtime.sendMessage({ type: 'STOP_AUDIT' });
+});
+
+copyAllPopupBtn.addEventListener('click', async () => {
+  try {
+    copyAllPopupBtn.textContent = '⏳ Copying All Screenshots...';
+    const count = await copyAllScreenshotsFromStorage();
+    copyAllPopupBtn.textContent = `✅ Copied All ${count} Images! Press Ctrl+V Anywhere`;
+    statusText.textContent = `Copied all ${count} screenshots to clipboard — press Ctrl+V to paste!`;
+    setTimeout(() => {
+      copyAllPopupBtn.textContent = '📋 Copy All Captured Screenshots (Paste All with Ctrl+V)';
+    }, 3000);
+  } catch (err) {
+    statusText.textContent = `⚠️ ${err?.message || 'Could not copy screenshots'}`;
+    copyAllPopupBtn.textContent = '📋 Copy All Captured Screenshots (Paste All with Ctrl+V)';
+  }
 });
 
 openReportBtn.addEventListener('click', async () => {
@@ -226,7 +320,6 @@ openSidePanelBtn.addEventListener('click', async () => {
   }
 });
 
-// Instant single-step tools for the currently active tab
 async function runOnActiveTab(actionFn) {
   const cfg = await collectAndSaveConfig(false);
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -271,7 +364,7 @@ async function runQuickCtrlFAndCapture(query, label) {
       query,
       showOverlay: true
     });
-    await new Promise(r => setTimeout(r, 500));
+    await new Promise(r => setTimeout(r, 300));
     const prep = await chrome.tabs.sendMessage(tab.id, {
       type: 'PREPARE_FOR_SCREENSHOT',
       email: cfg.userEmail,
