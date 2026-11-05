@@ -161,8 +161,8 @@
 
       <div class="grid-settings">
         <div class="field-group" style="margin-bottom:0;">
-          <label for="waitSecInput">Page Load Wait (sec):</label>
-          <input type="number" id="waitSecInput" min="2" max="30" value="5" />
+          <label for="waitSecInput">Extra Wait (sec):</label>
+          <input type="number" id="waitSecInput" min="0" max="20" value="1" />
         </div>
         <label class="checkbox-row">
           <input type="checkbox" id="autoDownloadCheck" />
@@ -171,10 +171,14 @@
       </div>
     </section>
 
-    <!-- Step 3: Run Controls -->
+    <!-- Step 3: Run & Copy All Images Controls -->
     <section class="actions-bar">
-      <button id="runAllBtn" class="btn-primary">🚀 Run All 6 Websites &amp; Take Screenshots</button>
+      <button id="runAllBtn" class="btn-primary">⚡ Run All 6 Websites Fast &amp; Screenshot</button>
       <button id="stopBtn" class="btn-danger hidden">⏹ Stop</button>
+    </section>
+
+    <section class="actions-bar">
+      <button id="copyAllPopupBtn" class="btn-primary" style="background:linear-gradient(135deg,#16a34a,#15803d);">📋 Copy All Captured Screenshots (Paste All with Ctrl+V)</button>
     </section>
 
     <!-- Step 4: Quick Current-Tab Manual Tools -->
