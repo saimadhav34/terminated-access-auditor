@@ -131,11 +131,12 @@
 
       if (type === 'search' || role === 'searchbox') score += 35;
       if (type === 'email') score += 45;
+      if (combined.includes('active user') || combined.includes('active users')) score += 60;
       if (combined.includes('email')) score += 50;
       if (combined.includes('user')) score += 45;
-      if (combined.includes('person') || combined.includes('member') || combined.includes('account') || combined.includes('employee')) score += 40;
+      if (combined.includes('person') || combined.includes('member') || combined.includes('account') || combined.includes('employee')) score += 45;
       if (combined.includes('search') || combined.includes('filter') || combined.includes('find') || combined.includes('lookup') || combined.includes('query')) score += 35;
-      if (combined.includes('ms-searchbox')) score += 45; // M365 Admin Center
+      if (combined.includes('ms-searchbox')) score += 50; // M365 Admin Center
 
       // Prefer inputs in the top half of the page
       const rect = el.getBoundingClientRect();
@@ -213,17 +214,19 @@
       for (const el of tabCandidates) {
         const text = (el.innerText || el.textContent || '').trim().toLowerCase();
         const aria = (el.getAttribute('aria-label') || '').trim().toLowerCase();
+        const href = (el.getAttribute('href') || '').trim().toLowerCase();
         if (
           text === 'groups' ||
+          text === 'group' ||
           text === 'group memberships' ||
           text === 'teams' ||
           text === 'roles & groups' ||
           text === 'user groups' ||
           text === 'memberships' ||
-          text === 'permissions' ||
           aria === 'groups' ||
-          /^groups\s*\(\d+\)$/i.test(text) ||
-          /^teams\s*\(\d+\)$/i.test(text)
+          href.endsWith('#groups') ||
+          href.includes('/groups') ||
+          /^groups\s*\(\d+\)$/i.test(text)
         ) {
           return el;
         }
@@ -234,9 +237,9 @@
     let groupsTabEl = findGroupsTabElement();
 
     if (!groupsTabEl && emailLower) {
-      // Try finding the user row/link in the search results table to open their profile/flyout
+      // Try finding the person/user row/link in the search results table to open their profile
       const rowCandidates = Array.from(document.querySelectorAll(
-        'tr a, [role="row"] a, [role="row"] [role="gridcell"], [role="listitem"] a, a[href*="user" i], .ms-DetailsRow, td a, td span'
+        'tr a, [role="row"] a, [role="row"] [role="gridcell"], [role="listitem"] a, a[href*="person" i], a[href*="user" i], .ms-DetailsRow, td a, td span'
       )).filter(isElementVisible);
 
       for (const el of rowCandidates) {
