@@ -32,10 +32,10 @@ function renderSitesList(sites) {
             Search User → Groups Tab → Ctrl+F "reporting" & "tableau"
           </option>
           <option value="email_search" ${site.mode === 'email_search' ? 'selected' : ''}>
-            Locate Email/Users Box → Paste Email & Screenshot
+            Locate Active User / Email Field → Paste Email & Search
           </option>
           <option value="ctrlf_sheet" ${site.mode === 'ctrlf_sheet' ? 'selected' : ''}>
-            Ctrl+F Search (Google Sheet / Page) & Screenshot
+            Ctrl+F → Search User Email (Google Sheet)
           </option>
         </select>
       </div>
@@ -94,6 +94,7 @@ async function collectAndSaveConfig(showFeedback = true) {
   });
 
   const nextConfig = {
+    configVersion: 2,
     userEmail: userEmailInput.value.trim(),
     keyword1: keyword1Input.value.trim() || 'reporting',
     keyword2: keyword2Input.value.trim() || 'tableau',
@@ -118,9 +119,13 @@ async function refreshUIFromStorage() {
     'auditResults'
   ]);
 
-  if (!auditConfig) {
+  if (!auditConfig || auditConfig.configVersion !== 2) {
     const res = await chrome.runtime.sendMessage({ type: 'GET_DEFAULT_CONFIG' });
-    currentConfig = res?.defaultConfig;
+    currentConfig = {
+      ...(res?.defaultConfig || {}),
+      userEmail: auditConfig?.userEmail || ''
+    };
+    await chrome.storage.local.set({ auditConfig: currentConfig });
   } else {
     currentConfig = auditConfig;
   }
