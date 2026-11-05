@@ -1,11 +1,8 @@
 // Terminated User Access Auditor - Popup & Side Panel Logic
 
 const userEmailInput = document.getElementById('userEmailInput');
-const keyword1Input = document.getElementById('keyword1Input');
-const keyword2Input = document.getElementById('keyword2Input');
 const waitSecInput = document.getElementById('waitSecInput');
 const autoDownloadCheck = document.getElementById('autoDownloadCheck');
-const sitesListContainer = document.getElementById('sitesListContainer');
 const saveLinksBtn = document.getElementById('saveLinksBtn');
 const runAllBtn = document.getElementById('runAllBtn');
 const stopBtn = document.getElementById('stopBtn');
@@ -15,99 +12,77 @@ const shotCountBadge = document.getElementById('shotCountBadge');
 const statusText = document.getElementById('statusText');
 const statusDot = document.getElementById('statusDot');
 
-let currentConfig = null;
-
-function renderSitesList(sites) {
-  sitesListContainer.innerHTML = '';
-  sites.forEach((site, idx) => {
-    const item = document.createElement('div');
-    item.className = 'site-item';
-    item.dataset.siteId = site.id;
-
-    item.innerHTML = `
-      <div class="site-top-row">
-        <span class="site-badge">${idx + 1}. ${escapeHtml(site.name)}</span>
-        <select class="site-mode-select" data-field="mode" data-idx="${idx}">
-          <option value="user_groups_ctrlf" ${site.mode === 'user_groups_ctrlf' ? 'selected' : ''}>
-            Search User → Groups Tab → Ctrl+F "reporting" & "tableau"
-          </option>
-          <option value="email_search" ${site.mode === 'email_search' ? 'selected' : ''}>
-            Locate Active User / Email Field → Paste Email & Search
-          </option>
-          <option value="ctrlf_sheet" ${site.mode === 'ctrlf_sheet' ? 'selected' : ''}>
-            Ctrl+F → Search User Email (Google Sheet)
-          </option>
-        </select>
-      </div>
-      <div class="site-url-row">
-        <input
-          type="url"
-          class="site-url-input"
-          data-field="url"
-          data-idx="${idx}"
-          placeholder="Paste link for ${escapeHtml(site.name)}..."
-          value="${escapeHtml(site.url || '')}"
-        />
-        <button class="btn-run-one" data-run-id="${site.id}" title="Run only ${escapeHtml(site.name)}">▶ Run</button>
-      </div>
-    `;
-    sitesListContainer.appendChild(item);
-  });
-
-  // Attach change & run listeners
-  sitesListContainer.querySelectorAll('input[data-field], select[data-field]').forEach(el => {
-    el.addEventListener('change', async () => {
-      await collectAndSaveConfig(false);
-    });
-  });
-
-  sitesListContainer.querySelectorAll('button[data-run-id]').forEach(btn => {
-    btn.addEventListener('click', async () => {
-      const siteId = btn.getAttribute('data-run-id');
-      const cfg = await collectAndSaveConfig(false);
-      await chrome.runtime.sendMessage({
-        type: 'START_FULL_AUDIT',
-        config: cfg,
-        targetSiteId: siteId
-      });
-    });
-  });
-}
-
-function escapeHtml(str) {
-  return String(str || '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
-}
+const SITE_DEFINITIONS = [
+  {
+    id: 'site_1',
+    index: 1,
+    name: 'Shutterstock Inc Person',
+    mode: 'user_groups_ctrlf',
+    inputId: 'url_site_1'
+  },
+  {
+    id: 'site_2',
+    index: 2,
+    name: 'PagerDuty',
+    mode: 'email_search',
+    inputId: 'url_site_2'
+  },
+  {
+    id: 'site_3',
+    index: 3,
+    name: 'M365 Admin Center',
+    mode: 'email_search',
+    inputId: 'url_site_3'
+  },
+  {
+    id: 'site_4',
+    index: 4,
+    name: 'Lucidchart',
+    mode: 'email_search',
+    inputId: 'url_site_4'
+  },
+  {
+    id: 'site_5',
+    index: 5,
+    name: 'Bigstock Admin',
+    mode: 'email_search',
+    inputId: 'url_site_5'
+  },
+  {
+    id: 'site_6',
+    index: 6,
+    name: 'Google Sheet',
+    mode: 'ctrlf_sheet',
+    inputId: 'url_site_6'
+  }
+];
 
 async function collectAndSaveConfig(showFeedback = true) {
-  const updatedSites = (currentConfig?.sites || []).map((s, idx) => {
-    const urlInput = sitesListContainer.querySelector(`input[data-field="url"][data-idx="${idx}"]`);
-    const modeSelect = sitesListContainer.querySelector(`select[data-field="mode"][data-idx="${idx}"]`);
+  const sites = SITE_DEFINITIONS.map(def => {
+    const inputEl = document.getElementById(def.inputId);
     return {
-      ...s,
-      url: urlInput ? urlInput.value.trim() : s.url,
-      mode: modeSelect ? modeSelect.value : s.mode
+      id: def.id,
+      index: def.index,
+      name: def.name,
+      mode: def.mode,
+      url: inputEl ? inputEl.value.trim() : ''
     };
   });
 
   const nextConfig = {
-    configVersion: 2,
+    configVersion: 3,
     userEmail: userEmailInput.value.trim(),
-    keyword1: keyword1Input.value.trim() || 'reporting',
-    keyword2: keyword2Input.value.trim() || 'tableau',
+    keyword1: 'reporting',
+    keyword2: 'tableau',
     pageLoadWaitSec: Math.max(2, Number(waitSecInput.value) || 5),
     autoDownloadScreenshots: autoDownloadCheck.checked,
-    sites: updatedSites
+    sites
   };
 
-  currentConfig = nextConfig;
   await chrome.storage.local.set({ auditConfig: nextConfig });
 
   if (showFeedback) {
-    statusText.textContent = 'Saved email & 6 website links!';
+    statusText.textContent = '✅ Saved email & 6 website links!';
   }
   return nextConfig;
 }
@@ -119,24 +94,21 @@ async function refreshUIFromStorage() {
     'auditResults'
   ]);
 
-  if (!auditConfig || auditConfig.configVersion !== 2) {
-    const res = await chrome.runtime.sendMessage({ type: 'GET_DEFAULT_CONFIG' });
-    currentConfig = {
-      ...(res?.defaultConfig || {}),
-      userEmail: auditConfig?.userEmail || ''
-    };
-    await chrome.storage.local.set({ auditConfig: currentConfig });
-  } else {
-    currentConfig = auditConfig;
-  }
+  if (auditConfig && auditConfig.configVersion === 3) {
+    userEmailInput.value = auditConfig.userEmail || '';
+    waitSecInput.value = auditConfig.pageLoadWaitSec || 5;
+    autoDownloadCheck.checked = Boolean(auditConfig.autoDownloadScreenshots);
 
-  if (currentConfig) {
-    userEmailInput.value = currentConfig.userEmail || '';
-    keyword1Input.value = currentConfig.keyword1 || 'reporting';
-    keyword2Input.value = currentConfig.keyword2 || 'tableau';
-    waitSecInput.value = currentConfig.pageLoadWaitSec || 5;
-    autoDownloadCheck.checked = Boolean(currentConfig.autoDownloadScreenshots);
-    renderSitesList(currentConfig.sites || []);
+    SITE_DEFINITIONS.forEach(def => {
+      const savedSite = (auditConfig.sites || []).find(s => s.id === def.id);
+      const inputEl = document.getElementById(def.inputId);
+      if (inputEl) {
+        inputEl.value = savedSite?.url || '';
+      }
+    });
+  } else {
+    // Initialize clean empty inputs so the extension explicitly asks for email + 6 site links
+    await collectAndSaveConfig(false);
   }
 
   shotCountBadge.textContent = String(auditResults.length);
@@ -145,7 +117,7 @@ async function refreshUIFromStorage() {
 
 function applyRunState(runState) {
   if (!runState) return;
-  statusText.textContent = runState.statusText || 'Ready';
+  statusText.textContent = runState.statusText || 'Enter the terminated user email and 6 website links.';
   if (runState.running) {
     statusDot.classList.add('running');
     stopBtn.classList.remove('hidden');
@@ -171,9 +143,41 @@ chrome.storage.onChanged.addListener((changes, area) => {
   }
 });
 
-// Event Listeners
-[userEmailInput, keyword1Input, keyword2Input, waitSecInput, autoDownloadCheck].forEach(el => {
+// Auto-save whenever inputs change
+[userEmailInput, waitSecInput, autoDownloadCheck].forEach(el => {
   el.addEventListener('change', () => collectAndSaveConfig(false));
+});
+
+SITE_DEFINITIONS.forEach(def => {
+  const inputEl = document.getElementById(def.inputId);
+  if (inputEl) {
+    inputEl.addEventListener('change', () => collectAndSaveConfig(false));
+  }
+});
+
+// Run individual site button
+document.querySelectorAll('button[data-run-id]').forEach(btn => {
+  btn.addEventListener('click', async () => {
+    const siteId = btn.getAttribute('data-run-id');
+    const cfg = await collectAndSaveConfig(false);
+    if (!cfg.userEmail) {
+      statusText.textContent = '⚠️ Please enter the Terminated User Email first.';
+      userEmailInput.focus();
+      return;
+    }
+    const targetSite = cfg.sites.find(s => s.id === siteId);
+    if (!targetSite?.url) {
+      statusText.textContent = `⚠️ Please paste the ${targetSite?.name || 'website'} link first.`;
+      const def = SITE_DEFINITIONS.find(d => d.id === siteId);
+      if (def) document.getElementById(def.inputId)?.focus();
+      return;
+    }
+    await chrome.runtime.sendMessage({
+      type: 'START_FULL_AUDIT',
+      config: cfg,
+      targetSiteId: siteId
+    });
+  });
 });
 
 saveLinksBtn.addEventListener('click', () => collectAndSaveConfig(true));
@@ -185,6 +189,14 @@ runAllBtn.addEventListener('click', async () => {
     userEmailInput.focus();
     return;
   }
+
+  const providedSites = cfg.sites.filter(s => s.url && s.url.length > 0);
+  if (providedSites.length === 0) {
+    statusText.textContent = '⚠️ Please paste the links for your websites (Shutterstock, PagerDuty, M365, Lucidchart, Bigstock, Google Sheet) first.';
+    document.getElementById('url_site_1')?.focus();
+    return;
+  }
+
   await chrome.runtime.sendMessage({
     type: 'START_FULL_AUDIT',
     config: cfg
