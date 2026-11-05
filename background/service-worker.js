@@ -1,13 +1,13 @@
 // Terminated User Access Auditor - MV3 Service Worker
 
-const CONFIG_VERSION = 2;
+const CONFIG_VERSION = 3;
 
 const DEFAULT_SITES = [
   {
     id: 'site_1',
     index: 1,
     name: 'Shutterstock Inc Person',
-    url: 'https://submit.shutterstock.com/admin/person',
+    url: '',
     mode: 'user_groups_ctrlf',
     description: 'Search user → Open Groups tab → Ctrl+F "reporting" (Screenshot) & "tableau" (Screenshot)'
   },
@@ -15,7 +15,7 @@ const DEFAULT_SITES = [
     id: 'site_2',
     index: 2,
     name: 'PagerDuty',
-    url: 'https://app.pagerduty.com/users',
+    url: '',
     mode: 'email_search',
     description: 'Locate Active User / Email field → Paste email & search → Gather details & Screenshot'
   },
@@ -23,7 +23,7 @@ const DEFAULT_SITES = [
     id: 'site_3',
     index: 3,
     name: 'M365 Admin Center',
-    url: 'https://admin.microsoft.com/Adminportal/Home#/users',
+    url: '',
     mode: 'email_search',
     description: 'Locate Active Users search field → Paste email & search → Gather details & Screenshot'
   },
@@ -31,7 +31,7 @@ const DEFAULT_SITES = [
     id: 'site_4',
     index: 4,
     name: 'Lucidchart',
-    url: 'https://lucid.app/users',
+    url: '',
     mode: 'email_search',
     description: 'Locate Active User / Email field → Paste email & search → Gather details & Screenshot'
   },
@@ -39,7 +39,7 @@ const DEFAULT_SITES = [
     id: 'site_5',
     index: 5,
     name: 'Bigstock Admin',
-    url: 'https://www.bigstockphoto.com/admin/users',
+    url: '',
     mode: 'email_search',
     description: 'Locate Active User / Email field → Paste email & search → Gather details & Screenshot'
   },
@@ -47,7 +47,7 @@ const DEFAULT_SITES = [
     id: 'site_6',
     index: 6,
     name: 'Google Sheet',
-    url: 'https://docs.google.com/spreadsheets/',
+    url: '',
     mode: 'ctrlf_sheet',
     description: 'Press Ctrl+F & search for terminated user email → Gather details & Screenshot'
   }
