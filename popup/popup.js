@@ -1,4 +1,4 @@
-// Terminated User Access Auditor - Popup & Side Panel Logic
+// Terminated User Access Auditor - Popup & Side Panel Logic (Permanent Link Storage)
 
 const userEmailInput = document.getElementById('userEmailInput');
 const waitSecInput = document.getElementById('waitSecInput');
@@ -46,7 +46,7 @@ const SITE_DEFINITIONS = [
     id: 'site_5',
     index: 5,
     name: 'Bigstock Admin',
-    mode: 'email_search',
+    mode: 'email_column_search',
     inputId: 'url_site_5'
   },
   {
@@ -57,6 +57,8 @@ const SITE_DEFINITIONS = [
     inputId: 'url_site_6'
   }
 ];
+
+let isPopupLoaded = false;
 
 function escapeHtml(str) {
   return String(str || '')
@@ -140,20 +142,25 @@ async function copyAllScreenshotsFromStorage() {
   return validShots.length;
 }
 
+// Permanently persist links across chrome.storage.local, chrome.storage.sync, and localStorage
 async function collectAndSaveConfig(showFeedback = true) {
+  if (!isPopupLoaded) return null;
+
+  const permanentLinks = {};
   const sites = SITE_DEFINITIONS.map(def => {
     const inputEl = document.getElementById(def.inputId);
+    const val = inputEl ? inputEl.value.trim() : '';
+    permanentLinks[def.id] = val;
     return {
       id: def.id,
       index: def.index,
       name: def.name,
       mode: def.mode,
-      url: inputEl ? inputEl.value.trim() : ''
+      url: val
     };
   });
 
   const nextConfig = {
-    configVersion: 4,
     userEmail: userEmailInput.value.trim(),
     keyword1: 'reporting',
     keyword2: 'tableau',
@@ -162,36 +169,69 @@ async function collectAndSaveConfig(showFeedback = true) {
     sites
   };
 
-  await chrome.storage.local.set({ auditConfig: nextConfig });
+  // Save in local storage, sync storage, and window.localStorage so links are never lost
+  await chrome.storage.local.set({
+    auditConfig: nextConfig,
+    permanentSiteLinks: permanentLinks
+  });
+
+  try {
+    await chrome.storage.sync.set({ permanentSiteLinks: permanentLinks });
+  } catch (_) {}
+
+  try {
+    localStorage.setItem('tua_permanent_links', JSON.stringify(permanentLinks));
+    localStorage.setItem('tua_last_email', nextConfig.userEmail);
+  } catch (_) {}
 
   if (showFeedback) {
-    statusText.textContent = '✅ Saved email & 6 website links!';
+    statusText.textContent = '✅ Permanently saved all 6 website links!';
   }
   return nextConfig;
 }
 
 async function refreshUIFromStorage() {
-  const { auditConfig, auditRunState, auditResults = [] } = await chrome.storage.local.get([
+  const { auditConfig, permanentSiteLinks, auditRunState, auditResults = [] } = await chrome.storage.local.get([
     'auditConfig',
+    'permanentSiteLinks',
     'auditRunState',
     'auditResults'
   ]);
 
-  if (auditConfig && (auditConfig.configVersion === 3 || auditConfig.configVersion === 4)) {
-    userEmailInput.value = auditConfig.userEmail || '';
-    waitSecInput.value = auditConfig.configVersion === 4 ? (auditConfig.pageLoadWaitSec ?? 1) : 1;
-    autoDownloadCheck.checked = Boolean(auditConfig.autoDownloadScreenshots);
+  let syncLinks = {};
+  try {
+    const syncData = await chrome.storage.sync.get('permanentSiteLinks');
+    syncLinks = syncData?.permanentSiteLinks || {};
+  } catch (_) {}
 
-    SITE_DEFINITIONS.forEach(def => {
-      const savedSite = (auditConfig.sites || []).find(s => s.id === def.id);
-      const inputEl = document.getElementById(def.inputId);
-      if (inputEl) {
-        inputEl.value = savedSite?.url || '';
-      }
-    });
-  } else {
-    await collectAndSaveConfig(false);
-  }
+  let localBackupLinks = {};
+  let localBackupEmail = '';
+  try {
+    localBackupLinks = JSON.parse(localStorage.getItem('tua_permanent_links') || '{}');
+    localBackupEmail = localStorage.getItem('tua_last_email') || '';
+  } catch (_) {}
+
+  // Restore email and settings without ever wiping them
+  userEmailInput.value = auditConfig?.userEmail || localBackupEmail || '';
+  waitSecInput.value = auditConfig?.pageLoadWaitSec ?? 1;
+  autoDownloadCheck.checked = Boolean(auditConfig?.autoDownloadScreenshots);
+
+  // Restore each of the 6 website links from any available permanent store
+  SITE_DEFINITIONS.forEach(def => {
+    const fromConfig = (auditConfig?.sites || []).find(s => s.id === def.id)?.url || '';
+    const fromPerm = permanentSiteLinks?.[def.id] || '';
+    const fromSync = syncLinks?.[def.id] || '';
+    const fromLocal = localBackupLinks?.[def.id] || '';
+    const bestUrl = fromPerm || fromConfig || fromSync || fromLocal || '';
+
+    const inputEl = document.getElementById(def.inputId);
+    if (inputEl) {
+      inputEl.value = bestUrl;
+    }
+  });
+
+  isPopupLoaded = true;
+  await collectAndSaveConfig(false);
 
   shotCountBadge.textContent = String(auditResults.length);
   applyRunState(auditRunState);
@@ -199,7 +239,7 @@ async function refreshUIFromStorage() {
 
 function applyRunState(runState) {
   if (!runState) return;
-  statusText.textContent = runState.statusText || 'Enter the terminated user email and 6 website links.';
+  statusText.textContent = runState.statusText || 'Ready — Your 6 website links are saved permanently.';
   if (runState.running) {
     statusDot.classList.add('running');
     stopBtn.classList.remove('hidden');
@@ -224,13 +264,17 @@ chrome.storage.onChanged.addListener((changes, area) => {
   }
 });
 
+// Save immediately on every input, paste, and change event so links are saved the instant they are typed/pasted
 [userEmailInput, waitSecInput, autoDownloadCheck].forEach(el => {
+  el.addEventListener('input', () => collectAndSaveConfig(false));
   el.addEventListener('change', () => collectAndSaveConfig(false));
 });
 
 SITE_DEFINITIONS.forEach(def => {
   const inputEl = document.getElementById(def.inputId);
   if (inputEl) {
+    inputEl.addEventListener('input', () => collectAndSaveConfig(false));
+    inputEl.addEventListener('paste', () => setTimeout(() => collectAndSaveConfig(false), 50));
     inputEl.addEventListener('change', () => collectAndSaveConfig(false));
   }
 });
