@@ -121,13 +121,7 @@ h1 {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 6px;
-}
-
-.helper-note {
-  font-size: 11px;
-  color: var(--muted);
-  margin-bottom: 10px;
+  margin-bottom: 8px;
 }
 
 .field-group {
@@ -163,10 +157,14 @@ select:focus {
   border-color: var(--accent);
 }
 
-.grid-3 {
+.grid-settings {
   display: grid;
-  grid-template-columns: 1fr 1fr 110px;
-  gap: 8px;
+  grid-template-columns: 140px 1fr;
+  align-items: end;
+  gap: 10px;
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
 }
 
 .checkbox-row {
@@ -176,7 +174,7 @@ select:focus {
   font-size: 11.5px;
   color: #cbd5e1;
   cursor: pointer;
-  margin-top: 2px;
+  padding-bottom: 5px;
 }
 
 .sites-list {
@@ -208,11 +206,30 @@ select:focus {
   color: #f8fafc;
 }
 
-.site-mode-select {
-  width: auto;
-  max-width: 245px;
-  font-size: 11px;
-  padding: 3px 6px;
+.action-tag {
+  font-size: 10.5px;
+  font-weight: 600;
+  padding: 2px 7px;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+
+.tag-groups {
+  background: rgba(245, 158, 11, 0.18);
+  color: #fbbf24;
+  border: 1px solid rgba(245, 158, 11, 0.4);
+}
+
+.tag-email {
+  background: rgba(56, 189, 248, 0.16);
+  color: #38bdf8;
+  border: 1px solid rgba(56, 189, 248, 0.35);
+}
+
+.tag-sheet {
+  background: rgba(34, 197, 94, 0.16);
+  color: #4ade80;
+  border: 1px solid rgba(34, 197, 94, 0.35);
 }
 
 .site-url-row {
