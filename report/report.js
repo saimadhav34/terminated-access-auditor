@@ -3,6 +3,7 @@
 const summaryTableBody = document.getElementById('summaryTableBody');
 const screenshotsGrid = document.getElementById('screenshotsGrid');
 const reportSubtitle = document.getElementById('reportSubtitle');
+const copyAllImagesBtn = document.getElementById('copyAllImagesBtn');
 const downloadAllPngBtn = document.getElementById('downloadAllPngBtn');
 const exportHtmlReportBtn = document.getElementById('exportHtmlReportBtn');
 const copySummaryBtn = document.getElementById('copySummaryBtn');
@@ -18,6 +19,93 @@ function escapeHtml(str) {
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;');
+}
+
+// Helper: load a dataURL into an HTMLImageElement
+function loadImage(dataUrl) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = reject;
+    img.src = dataUrl;
+  });
+}
+
+// Stitch all screenshots vertically onto a single high-res PNG Blob + build Rich HTML with all <img> tags
+// so pressing Ctrl+V anywhere (Jira, Slack, Teams, Outlook, Gmail, Docs, Word) pastes ALL images at once!
+async function copyAllScreenshotsToClipboard(results) {
+  const validShots = (results || []).filter(r => r.screenshotDataUrl);
+  if (validShots.length === 0) {
+    throw new Error('No screenshots available to copy.');
+  }
+
+  const loadedImages = await Promise.all(validShots.map(r => loadImage(r.screenshotDataUrl)));
+
+  const HEADER_HEIGHT = 46;
+  const GAP_HEIGHT = 18;
+  const maxWidth = Math.max(...loadedImages.map(img => img.naturalWidth || img.width || 1280));
+  const totalHeight = loadedImages.reduce(
+    (sum, img) => sum + HEADER_HEIGHT + (img.naturalHeight || img.height || 720) + GAP_HEIGHT,
+    0
+  );
+
+  const canvas = document.createElement('canvas');
+  canvas.width = maxWidth;
+  canvas.height = totalHeight;
+  const ctx = canvas.getContext('2d');
+
+  ctx.fillStyle = '#0f172a';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  let yOffset = 0;
+  for (let i = 0; i < validShots.length; i++) {
+    const item = validShots[i];
+    const img = loadedImages[i];
+    const w = img.naturalWidth || img.width;
+    const h = img.naturalHeight || img.height;
+
+    // Draw dark header bar above each screenshot
+    ctx.fillStyle = '#1e293b';
+    ctx.fillRect(0, yOffset, canvas.width, HEADER_HEIGHT);
+
+    ctx.fillStyle = '#38bdf8';
+    ctx.font = 'bold 18px Segoe UI, Arial, sans-serif';
+    const titleText = `${i + 1}. ${item.siteName || 'Website'} — ${item.stepLabel || ''} (Query: ${item.activeQuery || 'N/A'})`;
+    ctx.fillText(titleText, 16, yOffset + 29);
+
+    yOffset += HEADER_HEIGHT;
+    ctx.drawImage(img, 0, yOffset, w, h);
+    yOffset += h + GAP_HEIGHT;
+  }
+
+  const stitchedPngBlob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
+
+  // Also construct HTML with every individual image so Rich Text editors (Word/Docs/Outlook/Gmail) can paste them as individual images
+  const htmlParts = validShots.map((r, i) => `
+    <div style="margin-bottom:16px;">
+      <p><strong>${i + 1}. ${escapeHtml(r.siteName)} — ${escapeHtml(r.stepLabel)} (${escapeHtml(r.activeQuery || '')})</strong></p>
+      <img src="${r.screenshotDataUrl}" alt="${escapeHtml(r.siteName)}" style="max-width:100%;border:1px solid #cbd5e1;" />
+    </div>
+  `).join('');
+  const htmlBlob = new Blob([`<div>${htmlParts}</div>`], { type: 'text/html' });
+
+  await navigator.clipboard.write([
+    new ClipboardItem({
+      'image/png': stitchedPngBlob,
+      'text/html': htmlBlob
+    })
+  ]);
+}
+
+// Copy a single screenshot image to clipboard
+async function copySingleScreenshotToClipboard(dataUrl) {
+  const res = await fetch(dataUrl);
+  const blob = await res.blob();
+  await navigator.clipboard.write([
+    new ClipboardItem({
+      'image/png': blob
+    })
+  ]);
 }
 
 async function loadAndRenderReport() {
@@ -87,6 +175,7 @@ async function loadAndRenderReport() {
             </div>
           </div>
           <div style="display:flex;gap:6px;">
+            <button class="btn btn-primary" data-copy-idx="${i}">📋 Copy Image</button>
             <button class="btn btn-secondary" data-dl-idx="${i}">⬇️ Save PNG</button>
           </div>
         </div>
@@ -104,6 +193,18 @@ async function loadAndRenderReport() {
     `;
   }).join('');
 
+  screenshotsGrid.querySelectorAll('button[data-copy-idx]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const idx = Number(btn.getAttribute('data-copy-idx'));
+      const item = cachedResults[idx];
+      if (!item?.screenshotDataUrl) return;
+      await copySingleScreenshotToClipboard(item.screenshotDataUrl);
+      const orig = btn.textContent;
+      btn.textContent = '✅ Copied!';
+      setTimeout(() => { btn.textContent = orig; }, 1800);
+    });
+  });
+
   screenshotsGrid.querySelectorAll('button[data-dl-idx]').forEach(btn => {
     btn.addEventListener('click', async () => {
       const idx = Number(btn.getAttribute('data-dl-idx'));
@@ -117,6 +218,22 @@ async function loadAndRenderReport() {
     });
   });
 }
+
+copyAllImagesBtn.addEventListener('click', async () => {
+  try {
+    copyAllImagesBtn.textContent = '⏳ Copying All Images...';
+    await copyAllScreenshotsToClipboard(cachedResults);
+    copyAllImagesBtn.textContent = `✅ Copied All ${cachedResults.length} Screenshots! Press Ctrl+V to Paste`;
+    setTimeout(() => {
+      copyAllImagesBtn.textContent = '📋 Copy All Screenshots (Paste All with Ctrl+V)';
+    }, 3000);
+  } catch (err) {
+    copyAllImagesBtn.textContent = `⚠️ ${err?.message || 'Nothing to copy'}`;
+    setTimeout(() => {
+      copyAllImagesBtn.textContent = '📋 Copy All Screenshots (Paste All with Ctrl+V)';
+    }, 2500);
+  }
+});
 
 downloadAllPngBtn.addEventListener('click', async () => {
   for (let i = 0; i < cachedResults.length; i++) {
