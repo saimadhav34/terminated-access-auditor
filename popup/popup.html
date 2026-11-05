@@ -25,60 +25,159 @@
     <!-- Live Status Banner -->
     <div id="statusBanner" class="status-banner">
       <span id="statusDot" class="status-dot"></span>
-      <span id="statusText">Ready — Enter terminated user email and 6 website links below.</span>
+      <span id="statusText">Enter the terminated user's email and paste your 6 website links below.</span>
     </div>
 
-    <!-- Section 1: Terminated User Email & Keywords -->
+    <!-- Step 1: Ask for Terminated User Email -->
     <section class="card">
-      <div class="card-title">1. Terminated User &amp; Ctrl+F Keywords</div>
-      <div class="field-group">
-        <label for="userEmailInput">Terminated User Email / Username (to paste &amp; verify):</label>
-        <input type="email" id="userEmailInput" placeholder="e.g. terminated.user@company.com" autocomplete="off" />
+      <div class="card-title">1. Enter Terminated User Email</div>
+      <div class="field-group" style="margin-bottom:0;">
+        <label for="userEmailInput">Terminated User Email Address (Required):</label>
+        <input
+          type="email"
+          id="userEmailInput"
+          placeholder="Enter terminated user email (e.g. user@company.com)"
+          autocomplete="off"
+        />
       </div>
-
-      <div class="grid-3">
-        <div class="field-group">
-          <label for="keyword1Input">1st Ctrl+F Group Keyword:</label>
-          <input type="text" id="keyword1Input" value="reporting" />
-        </div>
-        <div class="field-group">
-          <label for="keyword2Input">2nd Ctrl+F Group Keyword:</label>
-          <input type="text" id="keyword2Input" value="tableau" />
-        </div>
-        <div class="field-group">
-          <label for="waitSecInput">Tab Load Wait (sec):</label>
-          <input type="number" id="waitSecInput" min="2" max="30" value="5" />
-        </div>
-      </div>
-
-      <label class="checkbox-row">
-        <input type="checkbox" id="autoDownloadCheck" />
-        <span>Automatically download PNG screenshots to <code>Downloads/Terminated_Access_Audit/</code></span>
-      </label>
     </section>
 
-    <!-- Section 2: 6 Website Links -->
+    <!-- Step 2: Explicitly Ask for Each of the 6 Website Links -->
     <section class="card">
       <div class="card-header-flex">
-        <span class="card-title" style="margin-bottom:0;">2. Provide Links for the 6 Websites</span>
+        <span class="card-title" style="margin-bottom:0;">2. Enter Links for the 6 Websites</span>
         <button id="saveLinksBtn" class="btn-small">💾 Save Links</button>
       </div>
-      <p class="helper-note">
-        <strong>Shutterstock Inc Person:</strong> searches user → opens <strong>Groups</strong> tab → Ctrl+F <code>reporting</code> &amp; <code>tableau</code> + screenshots.<br/>
-        <strong>PagerDuty, M365 Admin, Lucidchart, Bigstock:</strong> locates Active User / Email field → pastes email &amp; searches + screenshot.<br/>
-        <strong>Google Sheet:</strong> presses Ctrl+F → searches for email + screenshot.
-      </p>
 
-      <div id="sitesListContainer" class="sites-list"></div>
+      <div class="sites-list">
+        <!-- 1. Shutterstock Inc Person -->
+        <div class="site-item">
+          <div class="site-top-row">
+            <label for="url_site_1" class="site-badge">1. Shutterstock Inc Person Link:</label>
+            <span class="action-tag tag-groups">User → Groups Tab → Ctrl+F "reporting" &amp; "tableau"</span>
+          </div>
+          <div class="site-url-row">
+            <input
+              type="url"
+              id="url_site_1"
+              class="site-url-input"
+              data-site-id="site_1"
+              placeholder="Paste Shutterstock Inc Person link here..."
+            />
+            <button class="btn-run-one" data-run-id="site_1" title="Run Shutterstock Inc Person only">▶ Run</button>
+          </div>
+        </div>
+
+        <!-- 2. PagerDuty -->
+        <div class="site-item">
+          <div class="site-top-row">
+            <label for="url_site_2" class="site-badge">2. PagerDuty Link:</label>
+            <span class="action-tag tag-email">Locate Active User Field → Paste Email &amp; Search</span>
+          </div>
+          <div class="site-url-row">
+            <input
+              type="url"
+              id="url_site_2"
+              class="site-url-input"
+              data-site-id="site_2"
+              placeholder="Paste PagerDuty users link here..."
+            />
+            <button class="btn-run-one" data-run-id="site_2" title="Run PagerDuty only">▶ Run</button>
+          </div>
+        </div>
+
+        <!-- 3. M365 Admin Center -->
+        <div class="site-item">
+          <div class="site-top-row">
+            <label for="url_site_3" class="site-badge">3. M365 Admin Center Link:</label>
+            <span class="action-tag tag-email">Locate Active Users Field → Paste Email &amp; Search</span>
+          </div>
+          <div class="site-url-row">
+            <input
+              type="url"
+              id="url_site_3"
+              class="site-url-input"
+              data-site-id="site_3"
+              placeholder="Paste M365 Admin Center link here..."
+            />
+            <button class="btn-run-one" data-run-id="site_3" title="Run M365 Admin Center only">▶ Run</button>
+          </div>
+        </div>
+
+        <!-- 4. Lucidchart -->
+        <div class="site-item">
+          <div class="site-top-row">
+            <label for="url_site_4" class="site-badge">4. Lucidchart Link:</label>
+            <span class="action-tag tag-email">Locate Active User Field → Paste Email &amp; Search</span>
+          </div>
+          <div class="site-url-row">
+            <input
+              type="url"
+              id="url_site_4"
+              class="site-url-input"
+              data-site-id="site_4"
+              placeholder="Paste Lucidchart users link here..."
+            />
+            <button class="btn-run-one" data-run-id="site_4" title="Run Lucidchart only">▶ Run</button>
+          </div>
+        </div>
+
+        <!-- 5. Bigstock Admin -->
+        <div class="site-item">
+          <div class="site-top-row">
+            <label for="url_site_5" class="site-badge">5. Bigstock Admin Link:</label>
+            <span class="action-tag tag-email">Locate Active User Field → Paste Email &amp; Search</span>
+          </div>
+          <div class="site-url-row">
+            <input
+              type="url"
+              id="url_site_5"
+              class="site-url-input"
+              data-site-id="site_5"
+              placeholder="Paste Bigstock Admin link here..."
+            />
+            <button class="btn-run-one" data-run-id="site_5" title="Run Bigstock Admin only">▶ Run</button>
+          </div>
+        </div>
+
+        <!-- 6. Google Sheet -->
+        <div class="site-item">
+          <div class="site-top-row">
+            <label for="url_site_6" class="site-badge">6. Google Sheet Link:</label>
+            <span class="action-tag tag-sheet">Ctrl+F → Search Terminated User Email</span>
+          </div>
+          <div class="site-url-row">
+            <input
+              type="url"
+              id="url_site_6"
+              class="site-url-input"
+              data-site-id="site_6"
+              placeholder="Paste Google Sheet link here..."
+            />
+            <button class="btn-run-one" data-run-id="site_6" title="Run Google Sheet only">▶ Run</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="grid-settings">
+        <div class="field-group" style="margin-bottom:0;">
+          <label for="waitSecInput">Page Load Wait (sec):</label>
+          <input type="number" id="waitSecInput" min="2" max="30" value="5" />
+        </div>
+        <label class="checkbox-row">
+          <input type="checkbox" id="autoDownloadCheck" />
+          <span>Auto-download PNGs to <code>Downloads/Terminated_Access_Audit/</code></span>
+        </label>
+      </div>
     </section>
 
-    <!-- Section 3: Run Controls -->
+    <!-- Step 3: Run Controls -->
     <section class="actions-bar">
       <button id="runAllBtn" class="btn-primary">🚀 Run All 6 Websites &amp; Take Screenshots</button>
       <button id="stopBtn" class="btn-danger hidden">⏹ Stop</button>
     </section>
 
-    <!-- Section 4: Quick Current-Tab Manual Tools -->
+    <!-- Step 4: Quick Current-Tab Manual Tools -->
     <section class="card">
       <div class="card-title">3. Current Tab Instant Actions</div>
       <div class="quick-btns">
