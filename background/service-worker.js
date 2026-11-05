@@ -1,45 +1,47 @@
 // Terminated User Access Auditor - MV3 Service Worker
 
+const CONFIG_VERSION = 2;
+
 const DEFAULT_SITES = [
   {
     id: 'site_1',
     index: 1,
-    name: 'PagerDuty',
-    url: 'https://app.pagerduty.com/users',
+    name: 'Shutterstock Inc Person',
+    url: 'https://submit.shutterstock.com/admin/person',
     mode: 'user_groups_ctrlf',
-    description: 'Search user email → Go to Groups/Teams tab → Ctrl+F "reporting" (Screenshot) & "tableau" (Screenshot)'
+    description: 'Search user → Open Groups tab → Ctrl+F "reporting" (Screenshot) & "tableau" (Screenshot)'
   },
   {
     id: 'site_2',
     index: 2,
-    name: 'M365 Admin Center',
-    url: 'https://admin.microsoft.com/Adminportal/Home#/users',
-    mode: 'user_groups_ctrlf',
-    description: 'Search user email → Go to Groups tab → Ctrl+F "reporting" (Screenshot) & "tableau" (Screenshot)'
+    name: 'PagerDuty',
+    url: 'https://app.pagerduty.com/users',
+    mode: 'email_search',
+    description: 'Locate Active User / Email field → Paste email & search → Gather details & Screenshot'
   },
   {
     id: 'site_3',
     index: 3,
-    name: 'Lucidchart',
-    url: 'https://lucid.app/users',
+    name: 'M365 Admin Center',
+    url: 'https://admin.microsoft.com/Adminportal/Home#/users',
     mode: 'email_search',
-    description: 'Locate Email / Users search box → Paste terminated user email → Gather details & Screenshot'
+    description: 'Locate Active Users search field → Paste email & search → Gather details & Screenshot'
   },
   {
     id: 'site_4',
     index: 4,
-    name: 'Bigstock Admin',
-    url: 'https://www.bigstockphoto.com/admin/users',
+    name: 'Lucidchart',
+    url: 'https://lucid.app/users',
     mode: 'email_search',
-    description: 'Locate Email / Users search box → Paste terminated user email → Gather details & Screenshot'
+    description: 'Locate Active User / Email field → Paste email & search → Gather details & Screenshot'
   },
   {
     id: 'site_5',
     index: 5,
-    name: 'Shutterstock Inc Person',
-    url: 'https://submit.shutterstock.com/admin/person',
+    name: 'Bigstock Admin',
+    url: 'https://www.bigstockphoto.com/admin/users',
     mode: 'email_search',
-    description: 'Locate Email / Person search box → Paste terminated user email → Gather details & Screenshot'
+    description: 'Locate Active User / Email field → Paste email & search → Gather details & Screenshot'
   },
   {
     id: 'site_6',
@@ -47,11 +49,12 @@ const DEFAULT_SITES = [
     name: 'Google Sheet',
     url: 'https://docs.google.com/spreadsheets/',
     mode: 'ctrlf_sheet',
-    description: 'Ctrl+F search in Google Sheet for terminated user email / reporting / tableau → Gather details & Screenshot'
+    description: 'Press Ctrl+F & search for terminated user email → Gather details & Screenshot'
   }
 ];
 
 const DEFAULT_CONFIG = {
+  configVersion: CONFIG_VERSION,
   userEmail: '',
   keyword1: 'reporting',
   keyword2: 'tableau',
@@ -62,9 +65,12 @@ const DEFAULT_CONFIG = {
 
 chrome.runtime.onInstalled.addListener(async () => {
   const { auditConfig } = await chrome.storage.local.get('auditConfig');
-  if (!auditConfig) {
+  if (!auditConfig || auditConfig.configVersion !== CONFIG_VERSION) {
     await chrome.storage.local.set({
-      auditConfig: DEFAULT_CONFIG,
+      auditConfig: {
+        ...DEFAULT_CONFIG,
+        userEmail: auditConfig?.userEmail || ''
+      },
       auditResults: [],
       auditRunState: { running: false, statusText: 'Ready', progress: 0, total: 6 }
     });
@@ -133,7 +139,7 @@ async function ensureContentScriptReady(tabId) {
     });
     await sleep(250);
     return true;
-  } catch (err) {
+  } catch (_) {
     return false;
   }
 }
@@ -217,17 +223,15 @@ async function runSingleSiteAudit(site, config, progressIndex, totalSites) {
     statusText: `[${progressIndex}/${totalSites}] Opening ${site.name}...`
   });
 
-  // Find if tab with same URL prefix is already open, or create a new tab
   const tab = await chrome.tabs.create({ url: site.url, active: true });
   await waitForTabComplete(tab.id, 20000);
-  // Extra wait for SPA frameworks (M365, PagerDuty, Lucidchart, Google Sheets)
   await sleep(waitMs);
 
   await ensureContentScriptReady(tab.id);
 
   if (site.mode === 'user_groups_ctrlf') {
-    // First 2 sites workflow:
-    // 1. Search user email
+    // Shutterstock Inc Person workflow:
+    // 1. Locate user/person search field, paste email, and search
     await updateRunState({
       statusText: `[${progressIndex}/${totalSites}] ${site.name}: Searching user "${email}"...`
     });
@@ -236,12 +240,12 @@ async function runSingleSiteAudit(site, config, progressIndex, totalSites) {
         type: 'LOCATE_AND_PASTE_EMAIL',
         email
       }).catch(() => {});
-      await sleep(2400);
+      await sleep(2500);
     }
 
-    // 2. Open user row (if found) and click Groups tab
+    // 2. Open user profile (if result link exists) and switch to Groups tab
     await updateRunState({
-      statusText: `[${progressIndex}/${totalSites}] ${site.name}: Opening user & navigating to Groups tab...`
+      statusText: `[${progressIndex}/${totalSites}] ${site.name}: Opening Groups tab...`
     });
     await chrome.tabs.sendMessage(tab.id, {
       type: 'OPEN_USER_AND_GROUPS_TAB',
@@ -291,16 +295,16 @@ async function runSingleSiteAudit(site, config, progressIndex, totalSites) {
       autoDownload
     });
   } else if (site.mode === 'email_search') {
-    // Remaining Admin Sites (Lucidchart, Bigstock Admin, Shutterstock Inc Person):
-    // Locate email/users box -> paste email -> trigger search -> gather details & screenshot
+    // PagerDuty, M365 Admin Center, Lucidchart, Bigstock Admin:
+    // Locate active user / email search field -> paste email -> search -> gather details & screenshot
     await updateRunState({
-      statusText: `[${progressIndex}/${totalSites}] ${site.name}: Locating user/email box & pasting "${email}"...`
+      statusText: `[${progressIndex}/${totalSites}] ${site.name}: Locating active user / email field & searching "${email}"...`
     });
     await chrome.tabs.sendMessage(tab.id, {
       type: 'LOCATE_AND_PASTE_EMAIL',
       email
     }).catch(() => {});
-    await sleep(2500);
+    await sleep(2800);
 
     await updateRunState({
       statusText: `[${progressIndex}/${totalSites}] ${site.name}: Gathering details & capturing screenshot...`
@@ -309,31 +313,31 @@ async function runSingleSiteAudit(site, config, progressIndex, totalSites) {
       tabId: tab.id,
       siteName: site.name,
       siteIndex: site.index,
-      stepLabel: 'Email_User_Search',
+      stepLabel: 'Active_User_Email_Search',
       activeQuery: email,
       email,
-      hideCtrlFOverlay: false,
+      hideCtrlFOverlay: true,
       autoDownload
     });
   } else if (site.mode === 'ctrlf_sheet') {
-    // Google Sheet (or Ctrl+F site):
-    // Ctrl+F for the terminated user email (plus check reporting/tableau) & screenshot
+    // Google Sheet:
+    // Ctrl+F and search for the terminated user email -> gather details & screenshot
     const queryToUse = email || kw1;
     await updateRunState({
-      statusText: `[${progressIndex}/${totalSites}] ${site.name}: Running Ctrl+F for "${queryToUse}"...`
+      statusText: `[${progressIndex}/${totalSites}] ${site.name}: Ctrl+F searching email "${queryToUse}"...`
     });
     await chrome.tabs.sendMessage(tab.id, {
       type: 'RUN_CTRLF_SEARCH',
       query: queryToUse,
       showOverlay: true
     }).catch(() => {});
-    await sleep(1400);
+    await sleep(1500);
 
     await captureTabEvidence({
       tabId: tab.id,
       siteName: site.name,
       siteIndex: site.index,
-      stepLabel: `Sheet_CtrlF_${queryToUse}`,
+      stepLabel: 'Google_Sheet_CtrlF_Email',
       activeQuery: queryToUse,
       email,
       hideCtrlFOverlay: false,
@@ -344,7 +348,7 @@ async function runSingleSiteAudit(site, config, progressIndex, totalSites) {
 
 // Run all enabled sites (or a specific single site)
 async function startAuditWorkflow(config, targetSiteId = null) {
-  await chrome.storage.local.set({ auditConfig: config });
+  await chrome.storage.local.set({ auditConfig: { ...config, configVersion: CONFIG_VERSION } });
 
   const sitesToRun = (config.sites || DEFAULT_SITES).filter(s => {
     if (!s.url || !s.url.trim()) return false;
@@ -361,7 +365,6 @@ async function startAuditWorkflow(config, targetSiteId = null) {
   }
 
   if (!targetSiteId) {
-    // Clear previous run results when starting a fresh full 6-site audit
     await chrome.storage.local.set({ auditResults: [] });
   }
 
@@ -415,7 +418,6 @@ async function startAuditWorkflow(config, targetSiteId = null) {
     statusText: `Completed! Gathered details & screenshots for ${sitesToRun.length} site(s).`
   });
 
-  // Open the Full Audit Report & Screenshots Dashboard tab automatically
   const reportUrl = chrome.runtime.getURL('report/report.html');
   const existingTabs = await chrome.tabs.query({ url: reportUrl });
   if (existingTabs.length > 0) {
