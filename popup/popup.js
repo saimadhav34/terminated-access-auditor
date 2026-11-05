@@ -77,7 +77,7 @@ function loadImage(dataUrl) {
   });
 }
 
-// Copy all captured screenshots into the clipboard (both stitched PNG + individual HTML <img>s)
+// Copy all captured screenshots into the clipboard (pure images ONLY — no text or headers)
 async function copyAllScreenshotsFromStorage() {
   const { auditResults = [] } = await chrome.storage.local.get('auditResults');
   const validShots = auditResults.filter(r => r.screenshotDataUrl);
@@ -86,11 +86,10 @@ async function copyAllScreenshotsFromStorage() {
   }
 
   const loadedImages = await Promise.all(validShots.map(r => loadImage(r.screenshotDataUrl)));
-  const HEADER_HEIGHT = 46;
-  const GAP_HEIGHT = 18;
+  const GAP_HEIGHT = 8;
   const maxWidth = Math.max(...loadedImages.map(img => img.naturalWidth || img.width || 1280));
   const totalHeight = loadedImages.reduce(
-    (sum, img) => sum + HEADER_HEIGHT + (img.naturalHeight || img.height || 720) + GAP_HEIGHT,
+    (sum, img, idx) => sum + (img.naturalHeight || img.height || 720) + (idx < loadedImages.length - 1 ? GAP_HEIGHT : 0),
     0
   );
 
@@ -99,37 +98,19 @@ async function copyAllScreenshotsFromStorage() {
   canvas.height = totalHeight;
   const ctx = canvas.getContext('2d');
 
-  ctx.fillStyle = '#0f172a';
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
-
   let yOffset = 0;
   for (let i = 0; i < validShots.length; i++) {
-    const item = validShots[i];
     const img = loadedImages[i];
     const w = img.naturalWidth || img.width;
     const h = img.naturalHeight || img.height;
-
-    ctx.fillStyle = '#1e293b';
-    ctx.fillRect(0, yOffset, canvas.width, HEADER_HEIGHT);
-
-    ctx.fillStyle = '#38bdf8';
-    ctx.font = 'bold 18px Segoe UI, Arial, sans-serif';
-    const titleText = `${i + 1}. ${item.siteName || 'Website'} — ${item.stepLabel || ''} (Query: ${item.activeQuery || 'N/A'})`;
-    ctx.fillText(titleText, 16, yOffset + 29);
-
-    yOffset += HEADER_HEIGHT;
     ctx.drawImage(img, 0, yOffset, w, h);
     yOffset += h + GAP_HEIGHT;
   }
 
   const stitchedPngBlob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
 
-  const htmlParts = validShots.map((r, i) => `
-    <div style="margin-bottom:16px;">
-      <p><strong>${i + 1}. ${escapeHtml(r.siteName)} — ${escapeHtml(r.stepLabel)} (${escapeHtml(r.activeQuery || '')})</strong></p>
-      <img src="${r.screenshotDataUrl}" alt="${escapeHtml(r.siteName)}" style="max-width:100%;border:1px solid #cbd5e1;" />
-    </div>
-  `).join('');
+  // Pure <img> tags only — zero text
+  const htmlParts = validShots.map(r => `<img src="${r.screenshotDataUrl}" style="max-width:100%;display:block;margin-bottom:8px;" />`).join('');
   const htmlBlob = new Blob([`<div>${htmlParts}</div>`], { type: 'text/html' });
 
   await navigator.clipboard.write([
