@@ -137,80 +137,106 @@ async function ensureContentScriptReady(tabId) {
 }
 
 async function pasteEmailInMatchingFrameInput(tabId, email, preferUpperPeopleSearch = false, preferEmailColumn = false) {
-  const mainRes = await chrome.tabs.sendMessage(tabId, {
-    type: 'LOCATE_AND_PASTE_EMAIL',
-    email,
-    preferUpperPeopleSearch,
-    preferEmailColumn
-  }).catch(() => null);
+  const start = Date.now();
+  const maxWaitMs = 25000;
+  let mainRes = null;
 
-  try {
-    await chrome.scripting.executeScript({
-      target: { tabId, allFrames: true },
-      args: [email, preferUpperPeopleSearch, preferEmailColumn],
-      func: (userEmail, isUpperPeople, isEmailCol) => {
-        const inputs = Array.from(document.querySelectorAll(
-          'input:not([type="hidden"]):not([type="checkbox"]):not([type="radio"]):not([type="password"]), [role="searchbox"], [role="combobox"]'
-        )).filter(el => {
-          if (el.id === 'tua-ctrlf-input' || el.disabled || el.readOnly) return false;
-          const r = el.getBoundingClientRect();
-          return r.width > 20 && r.height > 10;
-        });
+  // Retry loop handles SSO redirects (like M365 login.microsoftonline.com -> admin.microsoft.com)
+  // and returns immediately on the first attempt as soon as the search input is found and searched!
+  while (Date.now() - start < maxWaitMs) {
+    await waitForTabComplete(tabId, 10000);
+    await ensureContentScriptReady(tabId);
 
-        let target = null;
-        for (const el of inputs) {
-          const desc = (
-            (el.getAttribute('placeholder') || '') + ' ' +
-            (el.getAttribute('aria-label') || '') + ' ' +
-            (el.getAttribute('title') || '') + ' ' +
-            (el.getAttribute('name') || '') + ' ' +
-            (el.getAttribute('id') || '')
-          ).toLowerCase();
+    mainRes = await chrome.tabs.sendMessage(tabId, {
+      type: 'LOCATE_AND_PASTE_EMAIL',
+      email,
+      preferUpperPeopleSearch,
+      preferEmailColumn
+    }).catch(() => null);
 
-          if (isEmailCol && (desc.includes('email') || desc.includes('e-mail') || el.getAttribute('type') === 'email')) {
-            target = el;
-            break;
+    if (mainRes?.foundInput) {
+      return mainRes;
+    }
+
+    // Also check all sub-frames in case the search box is inside an iframe (e.g. PagerDuty / Lucidchart)
+    let foundInSubFrame = false;
+    try {
+      const frameResults = await chrome.scripting.executeScript({
+        target: { tabId, allFrames: true },
+        args: [email, preferUpperPeopleSearch, preferEmailColumn],
+        func: (userEmail, isUpperPeople, isEmailCol) => {
+          const inputs = Array.from(document.querySelectorAll(
+            'input:not([type="hidden"]):not([type="checkbox"]):not([type="radio"]):not([type="password"]), [role="searchbox"], [role="combobox"]'
+          )).filter(el => {
+            if (el.id === 'tua-ctrlf-input' || el.disabled || el.readOnly) return false;
+            const r = el.getBoundingClientRect();
+            return r.width > 20 && r.height > 10;
+          });
+
+          let target = null;
+          for (const el of inputs) {
+            const desc = (
+              (el.getAttribute('placeholder') || '') + ' ' +
+              (el.getAttribute('aria-label') || '') + ' ' +
+              (el.getAttribute('title') || '') + ' ' +
+              (el.getAttribute('name') || '') + ' ' +
+              (el.getAttribute('id') || '')
+            ).toLowerCase();
+
+            if (isEmailCol && (desc.includes('email') || desc.includes('e-mail') || el.getAttribute('type') === 'email')) {
+              target = el;
+              break;
+            }
+            if (
+              desc.includes('search current view') ||
+              desc.includes('find a user by email') ||
+              desc.includes('by email or name') ||
+              desc.includes('find a user') ||
+              desc.includes('search active users') ||
+              desc.includes('search for people') ||
+              desc.includes('people, apps') ||
+              desc.includes('people,apps')
+            ) {
+              target = el;
+              break;
+            }
           }
-          if (
-            desc.includes('search current view') ||
-            desc.includes('find a user by email') ||
-            desc.includes('by email or name') ||
-            desc.includes('find a user') ||
-            desc.includes('search for people') ||
-            desc.includes('people, apps') ||
-            desc.includes('people,apps')
-          ) {
-            target = el;
-            break;
+
+          if (!target) return false;
+
+          target.focus();
+          target.click();
+          const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
+          if (setter) {
+            setter.call(target, '');
+            target.dispatchEvent(new Event('input', { bubbles: true }));
+            setter.call(target, userEmail);
+          } else {
+            target.value = userEmail;
           }
-        }
+          target.dispatchEvent(new InputEvent('beforeinput', { bubbles: true, cancelable: true, inputType: 'insertText', data: userEmail }));
+          target.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: userEmail }));
+          target.dispatchEvent(new Event('change', { bubbles: true }));
 
-        if (!target) return false;
-
-        target.focus();
-        target.click();
-        const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
-        if (setter) {
-          setter.call(target, '');
-          target.dispatchEvent(new Event('input', { bubbles: true }));
-          setter.call(target, userEmail);
-        } else {
-          target.value = userEmail;
+          if (!isUpperPeople) {
+            const enterOpts = { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true };
+            target.dispatchEvent(new KeyboardEvent('keydown', enterOpts));
+            target.dispatchEvent(new KeyboardEvent('keypress', enterOpts));
+            target.dispatchEvent(new KeyboardEvent('keyup', enterOpts));
+          }
+          return true;
         }
-        target.dispatchEvent(new InputEvent('beforeinput', { bubbles: true, cancelable: true, inputType: 'insertText', data: userEmail }));
-        target.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: userEmail }));
-        target.dispatchEvent(new Event('change', { bubbles: true }));
+      });
+      foundInSubFrame = (frameResults || []).some(r => r?.result === true);
+    } catch (_) {}
 
-        if (!isUpperPeople) {
-          const enterOpts = { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true };
-          target.dispatchEvent(new KeyboardEvent('keydown', enterOpts));
-          target.dispatchEvent(new KeyboardEvent('keypress', enterOpts));
-          target.dispatchEvent(new KeyboardEvent('keyup', enterOpts));
-        }
-        return true;
-      }
-    });
-  } catch (_) {}
+    if (foundInSubFrame) {
+      await sleep(800);
+      return { foundInput: true };
+    }
+
+    await sleep(300);
+  }
 
   return mainRes;
 }
@@ -372,7 +398,7 @@ async function runSingleSiteOnTab(site, tabId, config, progressIndex, totalSites
       statusText: `[${progressIndex}/${totalSites}] ${site.name}: Pasting "${email}" in ${isEmailCol ? 'Email column' : 'search field'}...`
     });
     await pasteEmailInMatchingFrameInput(tabId, email, false, isEmailCol);
-    await sleep(1000);
+    await sleep(250);
 
     await captureTabEvidence({
       tabId,
