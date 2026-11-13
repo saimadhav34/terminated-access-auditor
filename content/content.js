@@ -1,4 +1,4 @@
-// Terminated User Access Auditor - Precision Site-Aware Content Script
+// Terminated User Access Auditor - Precision Site-Aware Content Script (Smart Render & Spinner Detection)
 (() => {
   if (window.__tuaContentLoaded) return;
   window.__tuaContentLoaded = true;
@@ -7,6 +7,10 @@
 
   function sleep(ms) {
     return new Promise(r => setTimeout(r, ms));
+  }
+
+  function waitNextPaint() {
+    return new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
   }
 
   // Deep query across document, open ShadowRoots, and same-origin iframes
@@ -96,6 +100,85 @@
     return rect.width > 20 && rect.height > 10;
   }
 
+  // Check if page is still showing a blank screen or active loading spinners/shimmers (especially M365 Admin Center)
+  function isPageStillLoadingOrBlank() {
+    if (document.readyState !== 'complete') return true;
+    const bodyText = (document.body?.innerText || '').trim();
+    if (bodyText.length < 25) return true;
+
+    // Check for visible loading spinners / shimmers in M365, PagerDuty, Lucidchart, Okta
+    const spinners = querySelectorAllDeep(
+      '.ms-Spinner, .fui-Spinner, .ms-Shimmer-container, [role="progressbar"], ' +
+      '[aria-busy="true"], .loading-spinner, [class*="spinner" i], [class*="loadingOverlay" i]'
+    ).filter(el => {
+      if (!el.getBoundingClientRect) return false;
+      const win = el.ownerDocument?.defaultView || window;
+      const style = win.getComputedStyle(el);
+      if (style.display === 'none' || style.visibility === 'hidden' || parseFloat(style.opacity) === 0) return false;
+      const r = el.getBoundingClientRect();
+      return r.width > 8 && r.height > 8 && r.top >= 0 && r.top < window.innerHeight;
+    });
+
+    return spinners.length > 0;
+  }
+
+  // Wait until search results have finished loading and DOM text has settled (fast when quick, patient when M365 is slow)
+  async function waitForSearchResultsToSettle(email, maxWaitMs = 9000) {
+    const start = Date.now();
+    const emailLower = (email || '').toLowerCase().trim();
+    const noResultsKeywords = [
+      'we couldn\'t find',
+      'no results',
+      'no users found',
+      'no matching',
+      '0 users',
+      '0 results',
+      'user not found',
+      'no items found',
+      'nothing found',
+      'no records found'
+    ];
+
+    // Give the page 350ms to kick off its network search / spinner
+    await sleep(350);
+
+    let lastTextLength = -1;
+    let stableTicks = 0;
+
+    while (Date.now() - start < maxWaitMs) {
+      const loading = isPageStillLoadingOrBlank();
+      const bodyLower = (document.body?.innerText || '').toLowerCase();
+
+      if (!loading) {
+        // If explicit "no results" text appeared, results are definitely ready!
+        if (noResultsKeywords.some(kw => bodyLower.includes(kw))) {
+          await sleep(200);
+          await waitNextPaint();
+          return;
+        }
+
+        // Check if DOM text length has stabilized for 3 consecutive checks (~450ms)
+        const currentLen = bodyLower.length;
+        if (currentLen > 50 && Math.abs(currentLen - lastTextLength) <= 5) {
+          stableTicks++;
+          if (stableTicks >= 3) {
+            await waitNextPaint();
+            return;
+          }
+        } else {
+          stableTicks = 0;
+        }
+        lastTextLength = currentLen;
+      } else {
+        stableTicks = 0;
+      }
+
+      await sleep(150);
+    }
+
+    await waitNextPaint();
+  }
+
   function getElementDescriptorText(el) {
     const placeholder = el.getAttribute('placeholder') || '';
     const ariaLabel = el.getAttribute('aria-label') || '';
@@ -110,9 +193,7 @@
       .toLowerCase();
   }
 
-  // Dedicated detector for "Email" column input (used by Bigstock Admin & table-filter admin pages)
   function findEmailColumnInput(allInputs) {
-    // 1. Direct attribute match on input (name="email", id="email", placeholder="Email", data-column="email", etc.)
     for (const el of allInputs) {
       const directAttrs = (
         (el.getAttribute('name') || '') + ' ' +
@@ -128,7 +209,6 @@
       }
     }
 
-    // 2. Table column header match: find <th> or <td> or <label> whose text is "Email" and find the input in that column!
     const headersAndLabels = querySelectorAllDeep('th, td, label, [role="columnheader"], .column-header, span, div').filter(el => {
       if (!isElementVisible(el)) return false;
       const txt = (el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim().toLowerCase();
@@ -136,13 +216,11 @@
     });
 
     for (const hdr of headersAndLabels) {
-      // Case A: Input is inside the same header/cell/label
       const insideInput = hdr.querySelector && hdr.querySelector('input:not([type="hidden"]):not([type="checkbox"])');
       if (insideInput && isElementVisible(insideInput)) {
         return insideInput;
       }
 
-      // Case B: Input is in the next sibling cell (e.g. <td>Email:</td><td><input></td>)
       const nextSibling = hdr.nextElementSibling;
       if (nextSibling) {
         if (nextSibling.tagName === 'INPUT' && isElementVisible(nextSibling)) return nextSibling;
@@ -150,7 +228,6 @@
         if (sibInput && isElementVisible(sibInput)) return sibInput;
       }
 
-      // Case C: Table column index match (<th>Email</th> at column index N -> filter <tr> below has <input> at cell index N)
       const cell = hdr.closest('th, td, [role="columnheader"]');
       if (cell && cell.parentElement) {
         const siblings = Array.from(cell.parentElement.children);
@@ -170,7 +247,6 @@
         }
       }
 
-      // Case D: Visual column alignment (input horizontally aligned directly below the "Email" column header)
       const hdrRect = hdr.getBoundingClientRect();
       let closestAlignedInput = null;
       let minVerticalDist = 9999;
@@ -192,7 +268,6 @@
     return null;
   }
 
-  // Set value on React / Angular / Vue / Ember / Okta / FluentUI controlled input
   function setNativeInputValue(inputEl, value) {
     const win = inputEl.ownerDocument?.defaultView || window;
     inputEl.focus();
@@ -265,21 +340,45 @@
     }
   }
 
-  // Precision input finder with exact matches for Shutterstock Inc, Lucidchart, PagerDuty, Bigstock Email column, and M365
   function findBestUserOrEmailInput(preferUpperPeopleSearch = false, preferEmailColumn = false) {
+    const host = location.hostname.toLowerCase();
     const allInputs = querySelectorAllDeep(
       'input:not([type="hidden"]):not([type="checkbox"]):not([type="radio"]):not([type="file"]):not([type="password"]):not([type="submit"]):not([type="button"]), [role="searchbox"], [role="combobox"]'
     ).filter(isElementVisible);
 
     if (allInputs.length === 0) return null;
 
-    // 1. BIGSTOCK ADMIN / EMAIL COLUMN PRIORITY: Locate the input in the "Email" column
-    if (preferEmailColumn || location.hostname.toLowerCase().includes('bigstock')) {
+    // 1. M365 ADMIN CENTER: Wait specifically for the Active Users search box (never the top O365 suite header)
+    if (host.includes('microsoft.com')) {
+      for (const el of allInputs) {
+        const rect = el.getBoundingClientRect();
+        if (rect.top < 65) continue; // Skip top O365 suite bar
+        const desc = getElementDescriptorText(el);
+        const cls = (el.className || '').toString().toLowerCase();
+        if (
+          desc.includes('active user') ||
+          desc.includes('search active users') ||
+          desc.includes('find a user') ||
+          desc.includes('search') ||
+          cls.includes('ms-searchbox') ||
+          cls.includes('fui-input') ||
+          el.getAttribute('type') === 'search' ||
+          el.getAttribute('role') === 'searchbox'
+        ) {
+          return el;
+        }
+      }
+      // On M365, if only the top O365 header bar is loaded so far, return null so polling waits for the Active Users table to finish loading!
+      return null;
+    }
+
+    // 2. BIGSTOCK ADMIN / EMAIL COLUMN PRIORITY
+    if (preferEmailColumn || host.includes('bigstock')) {
       const emailColInput = findEmailColumnInput(allInputs);
       if (emailColInput) return emailColInput;
     }
 
-    // 2. SHUTTERSTOCK INC / OKTA UPPER SEARCH BAR: "Search for people, apps..."
+    // 3. SHUTTERSTOCK INC / OKTA UPPER SEARCH BAR: "Search for people, apps..."
     for (const el of allInputs) {
       const desc = getElementDescriptorText(el);
       if (
@@ -296,7 +395,7 @@
       if (upperInputs.length > 0) return upperInputs[0];
     }
 
-    // 3. LUCIDCHART EXACT MATCH: "Search current view"
+    // 4. LUCIDCHART EXACT MATCH: "Search current view"
     for (const el of allInputs) {
       const desc = getElementDescriptorText(el);
       if (desc.includes('search current view') || desc.includes('current view')) {
@@ -304,7 +403,7 @@
       }
     }
 
-    // 4. PAGERDUTY EXACT MATCH: "Find a user by email or name"
+    // 5. PAGERDUTY EXACT MATCH: "Find a user by email or name"
     for (const el of allInputs) {
       const desc = getElementDescriptorText(el);
       if (
@@ -317,15 +416,7 @@
       }
     }
 
-    // 5. M365 ADMIN CENTER EXACT MATCH: "Search active users list" / "active users"
-    for (const el of allInputs) {
-      const desc = getElementDescriptorText(el);
-      if (desc.includes('search active users') || desc.includes('active users list')) {
-        return el;
-      }
-    }
-
-    // 6. Check if there is an explicit Email Column input on the page
+    // 6. Explicit Email Column fallback
     const emailColFallback = findEmailColumnInput(allInputs);
     if (emailColFallback) return emailColFallback;
 
@@ -368,12 +459,15 @@
     return bestEl;
   }
 
-  async function waitForUserSearchInput(maxWaitMs = 3500, preferUpperPeopleSearch = false, preferEmailColumn = false) {
+  // Fast 120ms polling up to 22 seconds so fast sites run in <0.2s and slow sites (like M365) wait until the real search box renders
+  async function waitForUserSearchInput(maxWaitMs = 22000, preferUpperPeopleSearch = false, preferEmailColumn = false) {
     const start = Date.now();
     while (Date.now() - start < maxWaitMs) {
       const inputEl = findBestUserOrEmailInput(preferUpperPeopleSearch, preferEmailColumn);
-      if (inputEl) return inputEl;
-      await sleep(100);
+      if (inputEl) {
+        return inputEl;
+      }
+      await sleep(120);
     }
     return findBestUserOrEmailInput(preferUpperPeopleSearch, preferEmailColumn);
   }
@@ -381,17 +475,20 @@
   async function locateAndPasteEmail(email, preferUpperPeopleSearch = false, preferEmailColumn = false) {
     if (!email) return { foundInput: false, message: 'No email provided' };
 
-    let inputEl = await waitForUserSearchInput(3200, preferUpperPeopleSearch, preferEmailColumn);
+    const isM365 = location.hostname.toLowerCase().includes('microsoft.com');
+    const maxWait = isM365 ? 25000 : 12000;
+
+    let inputEl = await waitForUserSearchInput(maxWait, preferUpperPeopleSearch, preferEmailColumn);
 
     if (!inputEl) {
       const triggers = querySelectorAllDeep('button, [role="button"], a').filter(el => {
         if (!isElementVisible(el)) return false;
         const txt = getElementDescriptorText(el);
-        return txt.includes('find a user') || txt.includes('search current view') || txt.includes('search users');
+        return txt.includes('find a user') || txt.includes('search current view') || txt.includes('search users') || txt.includes('search active users');
       });
       if (triggers.length > 0) {
         triggers[0].click();
-        await sleep(250);
+        await sleep(300);
         inputEl = findBestUserOrEmailInput(preferUpperPeopleSearch, preferEmailColumn);
       }
     }
@@ -409,19 +506,21 @@
     currentHighlightedElements.push(inputEl);
 
     setNativeInputValue(inputEl, email);
-    await sleep(100);
+    await sleep(120);
 
     const desc = getElementDescriptorText(inputEl);
     const isPeopleDropdownSearch = preferUpperPeopleSearch || desc.includes('search for people') || desc.includes('people, apps');
     if (!isPeopleDropdownSearch) {
       triggerSearchSubmit(inputEl);
+      // Wait until the search spinner disappears and the filtered table results render!
+      await waitForSearchResultsToSettle(email, isM365 ? 10000 : 4000);
     }
 
     return {
       foundInput: true,
       isPeopleDropdownSearch,
       inputDescriptor: inputEl.getAttribute('placeholder') || inputEl.getAttribute('name') || inputEl.getAttribute('aria-label') || inputEl.tagName,
-      message: `Pasted "${email}" into "${inputEl.getAttribute('placeholder') || inputEl.getAttribute('name') || 'Email column'}"`
+      message: `Pasted "${email}" and verified results loaded`
     };
   }
 
@@ -431,7 +530,7 @@
     if (!emailLower) return { selectedUser: false };
 
     const start = Date.now();
-    while (Date.now() - start < 2200) {
+    while (Date.now() - start < 3500) {
       const candidates = querySelectorAllDeep(
         '[role="option"], [role="listbox"] a, [role="listbox"] li, [role="menuitem"], ' +
         'ul li a, .okta-dropdown-option, [class*="search-result" i] a, [class*="search-result" i] li, ' +
@@ -504,7 +603,7 @@
     };
 
     let groupsTabEl = null;
-    for (let attempt = 0; attempt < 12; attempt++) {
+    for (let attempt = 0; attempt < 20; attempt++) {
       groupsTabEl = findGroupsTabElement();
       if (groupsTabEl) break;
 
@@ -533,7 +632,7 @@
         clickableParent.click();
       }
       clickedGroupsTab = true;
-      await sleep(650);
+      await waitForSearchResultsToSettle('', 3000);
     }
 
     return {
@@ -556,6 +655,12 @@
       return { query: '', matchCount: 0, matchedSnippets: [] };
     }
 
+    // Wait briefly if page is still blank/loading (e.g. Google Sheets initial render)
+    const startWait = Date.now();
+    while (Date.now() - startWait < 10000 && (document.body?.innerText || '').trim().length < 20) {
+      await sleep(150);
+    }
+
     if (location.hostname.includes('docs.google.com') && location.pathname.includes('/spreadsheets')) {
       try {
         let gsFindInput = document.querySelector('.docs-findinput-input');
@@ -567,12 +672,13 @@
             ctrlKey: true,
             bubbles: true
           }));
-          await sleep(160);
+          await sleep(220);
           gsFindInput = document.querySelector('.docs-findinput-input');
         }
         if (gsFindInput && isElementVisible(gsFindInput)) {
           setNativeInputValue(gsFindInput, cleanQuery);
           triggerSearchSubmit(gsFindInput);
+          await sleep(350);
         }
       } catch (_) {}
     }
@@ -649,6 +755,7 @@
       }
     }
 
+    await waitNextPaint();
     return {
       query: cleanQuery,
       matchCount: matchedElements.length,
@@ -814,7 +921,7 @@
   async function requestBackgroundScreenshot(stepLabel, email, activeQuery) {
     const bar = document.getElementById('tua-helper-bar');
     if (bar) bar.classList.add('tua-screenshot-hide');
-    await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+    await waitNextPaint();
     const details = gatherSiteDetails(email);
     await chrome.runtime.sendMessage({
       type: 'CAPTURE_CURRENT_TAB_EVIDENCE',
@@ -862,13 +969,19 @@
         }
 
         if (message.type === 'PREPARE_FOR_SCREENSHOT') {
+          // Wait until page is not blank and any loading spinners have finished before taking the screenshot!
+          const waitStart = Date.now();
+          while (Date.now() - waitStart < 8000 && isPageStillLoadingOrBlank()) {
+            await sleep(150);
+          }
+
           const bar = document.getElementById('tua-helper-bar');
           if (bar) bar.classList.add('tua-screenshot-hide');
           if (message.hideCtrlFOverlay) {
             const overlay = document.getElementById('tua-ctrlf-overlay');
             if (overlay) overlay.classList.add('tua-hidden');
           }
-          await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+          await waitNextPaint();
           const details = gatherSiteDetails(message.email || '');
           sendResponse({ ok: true, details });
           return;
